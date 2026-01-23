@@ -34,7 +34,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define RPM_SIZE 8//マップサイズ変更はここで
+#define TPS_SIZE 6
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -48,11 +49,11 @@ I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart5;
 UART_HandleTypeDef huart2;
 
-osThreadId ig_fuel_TaskHandle;
-osThreadId actuator_TaskHandle;
-osThreadId sensor_TaskHandle;
-osThreadId Vehicle_TaskHandle;
-osThreadId send_SUBe_TaskHandle;
+osThreadId IG_TaskHandle;
+osThreadId fuel_TaskHandle;
+osThreadId Throttle_TaskHandle;
+osThreadId TMP_TaskHandle;
+osThreadId UI_TaskHandle;
 osMessageQId sensor_QueueHandle;
 osMessageQId command_QueueHandle;
 osMessageQId configQueueHandle;
@@ -68,11 +69,11 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_UART5_Init(void);
 static void MX_I2C1_Init(void);
-void ig_fuelTask(void const * argument);
-void actuator_task(void const * argument);
-void sensor_task(void const * argument);
-void vehicle_task(void const * argument);
-void send_SUBe_task(void const * argument);
+void ig_Task(void const * argument);
+void fuel_task(void const * argument);
+void Throttle_task(void const * argument);
+void TMP_task(void const * argument);
+void UI_task(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -80,7 +81,91 @@ void send_SUBe_task(void const * argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+int rpm_axis[RPM_SIZE] = {1200, 2500, 3500, 4500, 5500, 6500, 7500, 8500};
+int tps_axis[TPS_SIZE] = {0, 10, 25, 40, 60, 100};
 
+int map_fuel[RPM_SIZE][TPS_SIZE]; //空燃比表示
+int map_ign[RPM_SIZE][TPS_SIZE];//進角角度表示
+
+//可変進角管理用
+int rpm_pred = 1000;//予測RPM
+int tps_prev = 0;
+// TPS → 加速度予測係数（調整ポイント）
+float accel_gain = 3.0;  // 数字を大きくすると加速予測が強くなる
+
+
+float THper = 0;
+volatile int rpm_A = 0;
+
+//速度、タイムなど
+double speedKmh = 0.0;
+double timesecmin = 0.0;
+
+//温度管理用（センサーの定数など)
+const float BETA = 3435.0;     // サーミスタのB定数 103AT-2-34119
+const float R25 = 10000.0;     // 25℃でのサーミスタの抵抗値 (10kΩ)
+const float T0 = 298.15;       // 25℃ = 298.15K
+const float VREF = 3.3;        // 参照電圧
+const float R_FIXED = 10000.0; // 分圧抵抗 (10kΩ)
+
+// ピン定義 ※書き換えてね
+const int Cranksensor_PIN = 3;
+const int Camsensor_PIN = 4;
+const int Igoutput_PIN = 10;
+const int Fueloutput_PIN = 11;
+const int Throttlesensor_PIN = 26;//ADC 0
+const int Tmpsensor_PIN = 27;//ADC 1
+const int serial_1_TX = 0;//メインサブ通信用 GP0
+const int serial_1_RX = 1;//メインサブ通信用 GP1
+
+// t = 0～256（固定小数点）で線形補間
+static inline int lerp_int(int a, int b, int t)
+{
+    return a + (((b - a) * t) >> 8);   // >>8 は ÷256
+}
+
+static int findIndex(int valuea, const int *axis, int sizea)
+{
+    for (int i = 0; i < sizea - 1; i++) {
+        if (valuea >= axis[i] && valuea <= axis[i + 1]) {
+            return i;
+        }
+    }
+    return sizea - 2;
+}
+
+
+int getValue(int rpm, int tps, int mapp)
+{
+    // 区間インデックス
+    int i = findIndex(rpm, rpm_axis, RPM_SIZE);
+    int j = findIndex(tps,  tps_axis, TPS_SIZE);
+
+    // 補間係数を 0～256 に変換（固定小数点）
+    int t_rpm = ((rpm - rpm_axis[i]) << 8) / (rpm_axis[i+1] - rpm_axis[i]);
+    int t_tps = ((tps - tps_axis[j]) << 8) / (tps_axis[j+1] - tps_axis[j]);
+
+    // まずRPM方向補間
+    int v1 = lerp_int(mapp[i][j],     mapp[i+1][j],     t_rpm);
+    int v2 = lerp_int(mapp[i][j+1],   mapp[i+1][j+1],   t_rpm);
+
+    // 次にTPS方向補間
+    int result = lerp_int(v1, v2, t_tps);
+
+    return result;   // int のまま返す
+}
+
+//温度計算
+float GetTMP(int TMPinput){
+  float voltage = (TMPinput / 4095.0) * VREF;//ADC値を電圧に変換
+  float resistance = (R_FIXED * voltage) / (VREF - voltage); // サーミスタの抵抗値計算
+
+  // Steinhart-Hart 方程式を用いて温度 (K) を算出
+    float temperatureK = 1.0f / ((1.0f / T0) + (1.0f / BETA) * logf(resistance / R25));
+
+    // 絶対温度 (K) から摂氏 (°C) に変換
+    return temperatureK - 273.15;
+  }
 /* USER CODE END 0 */
 
 /**
@@ -159,25 +244,25 @@ int main(void)
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* definition and creation of ig_fuel_Task */
-  osThreadDef(ig_fuel_Task, ig_fuelTask, osPriorityHigh, 0, 128);
-  ig_fuel_TaskHandle = osThreadCreate(osThread(ig_fuel_Task), NULL);
+  /* definition and creation of IG_Task */
+  osThreadDef(IG_Task, ig_Task, osPriorityRealtime, 0, 128);
+  IG_TaskHandle = osThreadCreate(osThread(IG_Task), NULL);
 
-  /* definition and creation of actuator_Task */
-  osThreadDef(actuator_Task, actuator_task, osPriorityAboveNormal, 0, 128);
-  actuator_TaskHandle = osThreadCreate(osThread(actuator_Task), NULL);
+  /* definition and creation of fuel_Task */
+  osThreadDef(fuel_Task, fuel_task, osPriorityRealtime, 0, 128);
+  fuel_TaskHandle = osThreadCreate(osThread(fuel_Task), NULL);
 
-  /* definition and creation of sensor_Task */
-  osThreadDef(sensor_Task, sensor_task, osPriorityAboveNormal, 0, 128);
-  sensor_TaskHandle = osThreadCreate(osThread(sensor_Task), NULL);
+  /* definition and creation of Throttle_Task */
+  osThreadDef(Throttle_Task, Throttle_task, osPriorityHigh, 0, 128);
+  Throttle_TaskHandle = osThreadCreate(osThread(Throttle_Task), NULL);
 
-  /* definition and creation of Vehicle_Task */
-  osThreadDef(Vehicle_Task, vehicle_task, osPriorityAboveNormal, 0, 128);
-  Vehicle_TaskHandle = osThreadCreate(osThread(Vehicle_Task), NULL);
+  /* definition and creation of TMP_Task */
+  osThreadDef(TMP_Task, TMP_task, osPriorityAboveNormal, 0, 128);
+  TMP_TaskHandle = osThreadCreate(osThread(TMP_Task), NULL);
 
-  /* definition and creation of send_SUBe_Task */
-  osThreadDef(send_SUBe_Task, send_SUBe_task, osPriorityNormal, 0, 128);
-  send_SUBe_TaskHandle = osThreadCreate(osThread(send_SUBe_Task), NULL);
+  /* definition and creation of UI_Task */
+  osThreadDef(UI_Task, UI_task, osPriorityNormal, 0, 128);
+  UI_TaskHandle = osThreadCreate(osThread(UI_Task), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -390,14 +475,14 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_ig_fuelTask */
+/* USER CODE BEGIN Header_ig_Task */
 /**
-  * @brief  Function implementing the ig_fuel_Task thread.
+  * @brief  Function implementing the IG_Task thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_ig_fuelTask */
-void ig_fuelTask(void const * argument)
+/* USER CODE END Header_ig_Task */
+void ig_Task(void const * argument)
 {
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
@@ -408,76 +493,76 @@ void ig_fuelTask(void const * argument)
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_actuator_task */
+/* USER CODE BEGIN Header_fuel_task */
 /**
-* @brief Function implementing the actuator_Task thread.
+* @brief Function implementing the fuel_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_actuator_task */
-void actuator_task(void const * argument)
+/* USER CODE END Header_fuel_task */
+void fuel_task(void const * argument)
 {
-  /* USER CODE BEGIN actuator_task */
+  /* USER CODE BEGIN fuel_task */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END actuator_task */
+  /* USER CODE END fuel_task */
 }
 
-/* USER CODE BEGIN Header_sensor_task */
+/* USER CODE BEGIN Header_Throttle_task */
 /**
-* @brief Function implementing the sensor_Task thread.
+* @brief Function implementing the Throttle_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_sensor_task */
-void sensor_task(void const * argument)
+/* USER CODE END Header_Throttle_task */
+void Throttle_task(void const * argument)
 {
-  /* USER CODE BEGIN sensor_task */
+  /* USER CODE BEGIN Throttle_task */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END sensor_task */
+  /* USER CODE END Throttle_task */
 }
 
-/* USER CODE BEGIN Header_vehicle_task */
+/* USER CODE BEGIN Header_TMP_task */
 /**
-* @brief Function implementing the Vehicle_Task thread.
+* @brief Function implementing the TMP_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_vehicle_task */
-void vehicle_task(void const * argument)
+/* USER CODE END Header_TMP_task */
+void TMP_task(void const * argument)
 {
-  /* USER CODE BEGIN vehicle_task */
+  /* USER CODE BEGIN TMP_task */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END vehicle_task */
+  /* USER CODE END TMP_task */
 }
 
-/* USER CODE BEGIN Header_send_SUBe_task */
+/* USER CODE BEGIN Header_UI_task */
 /**
-* @brief Function implementing the send_SUBe_Task thread.
+* @brief Function implementing the UI_Task thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_send_SUBe_task */
-void send_SUBe_task(void const * argument)
+/* USER CODE END Header_UI_task */
+void UI_task(void const * argument)
 {
-  /* USER CODE BEGIN send_SUBe_task */
+  /* USER CODE BEGIN UI_task */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END send_SUBe_task */
+  /* USER CODE END UI_task */
 }
 
 /**

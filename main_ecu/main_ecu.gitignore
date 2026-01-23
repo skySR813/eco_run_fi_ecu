@@ -1,0 +1,11 @@
+debug/
+Release/
+
+.settings/
+.cproject
+.project
+
+*.launch
+*.log
+
+.DS_Store
