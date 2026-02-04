@@ -1,0 +1,11 @@
+osThreadId IG_TaskHandle;
+osThreadId fuel_TaskHandle;
+osThreadId Throttle_TaskHandle;
+osThreadId TMP_TaskHandle;
+osThreadId UI_TaskHandle;
+osMessageQId sensor_QueueHandle;
+osMessageQId command_QueueHandle;
+osMessageQId configQueueHandle;
+osMutexId Uart_mutexHandle;
+osMutexId I2C_mutexHandle;
+osSemaphoreId Crank_SemHandle;

@@ -41,6 +41,7 @@
 /* USER CODE BEGIN PD */
 #define RPM_SIZE 8//マップサイズ変更はここで
 #define TPS_SIZE 6
+#define BASE_ANGLE 27//センサー基準位置あとでTDCで計算
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,9 +50,13 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+ADC_HandleTypeDef hadc2;
+
 I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart5;
 UART_HandleTypeDef huart2;
@@ -65,6 +70,7 @@ osMessageQId sensor_QueueHandle;
 osMessageQId command_QueueHandle;
 osMessageQId configQueueHandle;
 osMutexId Uart_mutexHandle;
+osMutexId I2C_mutexHandle;
 osSemaphoreId Crank_SemHandle;
 /* USER CODE BEGIN PV */
 
@@ -77,6 +83,9 @@ static void MX_USART2_UART_Init(void);
 static void MX_UART5_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_ADC2_Init(void);
 void ig_Task(void const * argument);
 void fuel_task(void const * argument);
 void Throttle_task(void const * argument);
@@ -92,8 +101,25 @@ void UI_task(void const * argument);
 int rpm_axis[RPM_SIZE] = {1200, 2500, 3500, 4500, 5500, 6500, 7500, 8500};
 int tps_axis[TPS_SIZE] = {0, 10, 25, 40, 60, 100};
 
-int map_fuel[RPM_SIZE][TPS_SIZE]; //空燃比表示
-int map_ign[RPM_SIZE][TPS_SIZE];//進角角度表示
+double map_fuel[RPM_SIZE][TPS_SIZE] = {{16.5,16.0,15.5,14.7,14.2,13.8},
+		                               {16.8,16.2,15.0,14.7,14.0,13.6},
+									   {17.0,16.3,15.0,14.5,13.8,13.2},
+									   {17.0,16.2,14.8,14.2,13.5,13.0},
+									   {16.8,16.0,14.5,14.0,13.2,12.8},
+									   {16.5,15.8,14.2,13.8,13.0,12.6},
+									   {16.2,15.5,14.0,13.6,12.8,12.5},
+									   {16.0,15.2,13.8,13.5,12.7,12.4}}; //空燃比表示(デフォルト)
+
+int map_ign[RPM_SIZE][TPS_SIZE] = {
+ {8,10,12,14,16,16},
+ {12,16,20,22,24,24},
+ {14,20,24,26,28,28},
+ {16,22,26,28,30,30},
+ {16,24,28,30,32,32},
+ {14,22,26,28,30,30},
+ {12,20,24,26,28,28},
+ {10,18,22,24,26,26}
+};//進角角度表示(デフォルト)上死点前
 
 //可変進角管理用
 int rpm_pred = 1000;//予測RPM
@@ -102,9 +128,9 @@ int tps_prev = 0;
 float accel_gain = 3.0;  // 数字を大きくすると加速予測が強くなる
 
 
-float THper = 0;
+volatile int THper = 0;
 volatile int rpm_A = 0;
-
+volatile int fdeg = 0;
 //速度、タイムなど
 double speedKmh = 0.0;
 double timesecmin = 0.0;
@@ -129,7 +155,9 @@ const int serial_1_RX = 1;//メインサブ通信用 GP1
 // ===== 点火用 =====
 volatile uint32_t crank_last_us = 0;
 volatile uint32_t crank_period_us = 15000;
-volatile int ignition_delay_us = 0;
+volatile int32_t delay_us = 0;
+int dwell_count = 0;
+volatile int crank_flag = 0;
 
 
 // t = 0～256（固定小数点）で線形補間
@@ -149,7 +177,27 @@ static int findIndex(int valuea, const int *axis, int sizea)
 }
 
 
-int getValue(int rpm, int tps, int mapp)
+int getValue_f(int rpm, int tps, double mapp[RPM_SIZE][TPS_SIZE])
+{
+    // 区間インデックス
+    int i = findIndex(rpm, rpm_axis, RPM_SIZE);
+    int j = findIndex(tps,  tps_axis, TPS_SIZE);
+
+    // 補間係数を 0～256 に変換（固定小数点）
+    int t_rpm = ((rpm - rpm_axis[i]) << 8) / (rpm_axis[i+1] - rpm_axis[i]);
+    int t_tps = ((tps - tps_axis[j]) << 8) / (tps_axis[j+1] - tps_axis[j]);
+
+    // まずRPM方向補間
+    int v1 = lerp_int(mapp[i][j],     mapp[i+1][j],     t_rpm);
+    int v2 = lerp_int(mapp[i][j+1],   mapp[i+1][j+1],   t_rpm);
+
+    // 次にTPS方向補間
+    int result = lerp_int(v1, v2, t_tps);
+
+    return result;   // int のまま返す
+}
+
+int getValue_i(int rpm, int tps, int mapp[RPM_SIZE][TPS_SIZE])
 {
     // 区間インデックス
     int i = findIndex(rpm, rpm_axis, RPM_SIZE);
@@ -215,7 +263,12 @@ int main(void)
   MX_UART5_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
+  MX_ADC1_Init();
+  MX_TIM3_Init();
+  MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
+  HAL_TIM_Base_Start(&htim2);   // 周期計測用
+  HAL_TIM_Base_Start(&htim3);   // 点火遅延用
 
   /* USER CODE END 2 */
 
@@ -223,6 +276,10 @@ int main(void)
   /* definition and creation of Uart_mutex */
   osMutexDef(Uart_mutex);
   Uart_mutexHandle = osMutexCreate(osMutex(Uart_mutex));
+
+  /* definition and creation of I2C_mutex */
+  osMutexDef(I2C_mutex);
+  I2C_mutexHandle = osMutexCreate(osMutex(I2C_mutex));
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
@@ -276,7 +333,7 @@ int main(void)
   TMP_TaskHandle = osThreadCreate(osThread(TMP_Task), NULL);
 
   /* definition and creation of UI_Task */
-  osThreadDef(UI_Task, UI_task, osPriorityNormal, 0, 128);
+  osThreadDef(UI_Task, UI_task, osPriorityLow, 0, 256);
   UI_TaskHandle = osThreadCreate(osThread(UI_Task), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -351,6 +408,110 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief ADC2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC2_Init(void)
+{
+
+  /* USER CODE BEGIN ADC2_Init 0 */
+
+  /* USER CODE END ADC2_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC2_Init 1 */
+
+  /* USER CODE END ADC2_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc2.Instance = ADC2;
+  hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc2.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc2.Init.ScanConvMode = DISABLE;
+  hadc2.Init.ContinuousConvMode = DISABLE;
+  hadc2.Init.DiscontinuousConvMode = DISABLE;
+  hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc2.Init.NbrOfConversion = 1;
+  hadc2.Init.DMAContinuousRequests = DISABLE;
+  hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC2_Init 2 */
+
+  /* USER CODE END ADC2_Init 2 */
+
 }
 
 /**
@@ -442,7 +603,65 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
-  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 179;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 0xFFFF;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+  HAL_NVIC_SetPriority(TIM3_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(TIM3_IRQn);
+  /* USER CODE END TIM3_Init 2 */
 
 }
 
@@ -521,7 +740,7 @@ static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
-
+  __HAL_RCC_SYSCFG_CLK_ENABLE();
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
@@ -532,26 +751,24 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, LD2_Pin|IG_output_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : B1_Pin */
-  GPIO_InitStruct.Pin = B1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PC0 PC1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
+  /*Configure GPIO pin : EXTI0_crank_Pin */
+  GPIO_InitStruct.Pin = EXTI0_crank_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(EXTI0_crank_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
+  /*Configure GPIO pins : LD2_Pin IG_output_Pin */
+  GPIO_InitStruct.Pin = LD2_Pin|IG_output_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -559,50 +776,55 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/*
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == B1_Pin)   // ← クランク入力ピンに合わせる
+  if (GPIO_Pin == EXTI0_crank_Pin)   // ← クランク入力ピンに合わせる
   {
-    uint32_t now = __HAL_TIM_GET_COUNTER(&htim2);
-    crank_period_us = now - crank_last_us;
-    crank_last_us = now;
+	uint32_t now = __HAL_TIM_GET_COUNTER(&htim2);
 
-    rpm_A = 60000000UL / crank_period_us;
+	HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // デバッグ用
 
-    // ===== TPSベース未来予測 =====
-    int dtps = THper - tps_prev;
-    tps_prev = THper;
-    rpm_pred = rpm_A + dtps * accel_gain;
+	crank_period_us = now - crank_last_us;
+	crank_last_us = now;
+	//if (crank_period_us < 3000) return;   // ≒ 10000rpm以上
+	//if (crank_period_us > 100000) return; // クランキング異常
 
-    if (rpm_pred < 800) rpm_pred = 800;
-    if (rpm_pred > 12000) rpm_pred = 12000;
 
-    // ===== 点火マップ参照 =====
-    int fdeg = getValue(rpm_pred, THper, map_ign);
+	rpm_A = 60000000UL / crank_period_us;
 
-    int sdeg = 27 - fdeg;
-    ignition_delay_us = (sdeg * crank_period_us) / 360;
-    if (ignition_delay_us < 0)
-        ignition_delay_us += crank_period_us;
+	// RTOSタスクに渡すだけ
+	 //osSemaphoreRelease(Crank_SemHandle);
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+	xSemaphoreGiveFromISR(Crank_SemHandle, &xHigherPriorityTaskWoken);
+	portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 
-    // ===== タイマ予約 =====
-    __HAL_TIM_SET_COUNTER(&htim2, 0);
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, ignition_delay_us);
-    HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_1);
+  }
+}
+*/
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == EXTI0_crank_Pin)   // ← クランク入力ピンに合わせる
+  {
+	crank_flag = 1;
+	//HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // デバッグ用
   }
 }
 
 void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if (htim->Instance == TIM2)
+  if (htim->Instance == TIM3)
   {
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET); // IGN ON
+    HAL_GPIO_WritePin(IG_output_GPIO_Port, IG_output_Pin, GPIO_PIN_SET); // IGN ON
+    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin,GPIO_PIN_SET); // デバッグ用
 
-    for (volatile int i = 0; i < 200; i++); // ≒50µs
+    for (volatile int i = 0; i < dwell_count; i++); // ≒50µs
 
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET); // IGN OFF
+    HAL_GPIO_WritePin(IG_output_GPIO_Port, IG_output_Pin, GPIO_PIN_RESET); // IGN OFF
+    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin,GPIO_PIN_RESET); // デバッグ用
 
-    HAL_TIM_OC_Stop_IT(&htim2, TIM_CHANNEL_1);
+
+    HAL_TIM_OC_Stop_IT(&htim3, TIM_CHANNEL_1);
   }
 }
 
@@ -620,10 +842,44 @@ void ig_Task(void const * argument)
 {
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
+
+
   for(;;)
   {
-    osDelay(1);
+	  if (crank_flag)
+	      {
+	        crank_flag = 0;
+
+
+	        uint32_t now = __HAL_TIM_GET_COUNTER(&htim2);
+	        crank_period_us = now - crank_last_us;
+	        crank_last_us = now;
+
+	        rpm_A = 60000000UL / crank_period_us;
+	        if (rpm_A < 3000)      dwell_count = 120;
+	        else if (rpm_A < 6000) dwell_count = 80;
+	        else                   dwell_count = 50;
+
+
+	        fdeg = getValue_i(rpm_A, THper, map_ign);
+	        if (fdeg < 0)  fdeg = 0;
+	        if (fdeg > 35) fdeg = 35;
+
+	        int32_t sdeg = BASE_ANGLE - fdeg;
+	        delay_us = (sdeg * crank_period_us) / 360;
+	        if (delay_us < 50) delay_us = 50;
+	        if (delay_us > 60000) delay_us = 60000;
+
+
+	        __HAL_TIM_SET_COUNTER(&htim3, 0);
+	        __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, delay_us);
+	        HAL_TIM_OC_Start_IT(&htim3, TIM_CHANNEL_1);
+	      }
+
+	      osDelay(1);
+
   }
+
   /* USER CODE END 5 */
 }
 
@@ -658,7 +914,23 @@ void Throttle_task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	  // ADCの開始
+	  	          HAL_ADC_Start(&hadc1);
+
+	  	          // ADC変換が完了するまで待機
+	  	          if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)
+	  	          {
+	  	              // ADCの値を取得
+	  	              uint32_t TH = HAL_ADC_GetValue(&hadc1);
+
+	  	              // ADCの最大値（12ビット分解能の場合：4095）を基に百分率に変換
+	  	              THper = (TH * 100) / 4095;
+	  	          }
+
+	  	          // ADCの停止
+	  	          HAL_ADC_Stop(&hadc1);
+
+	  	          osDelay(5);
   }
   /* USER CODE END Throttle_task */
 }
@@ -676,7 +948,22 @@ void TMP_task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	  HAL_ADC_Start(&hadc2);
+
+	  	  	          // ADC変換が完了するまで待機
+	  	  	          if (HAL_ADC_PollForConversion(&hadc2, 100) == HAL_OK)
+	  	  	          {
+	  	  	              // ADCの値を取得
+	  	  	              uint32_t tmpp = HAL_ADC_GetValue(&hadc2);
+
+	  	  	              // 温度℃変換
+	  	  	              double tmp = GetTMP(tmpp);
+	  	  	          }
+
+	  	  	          // ADCの停止
+	  	  	          HAL_ADC_Stop(&hadc2);
+
+	  	  	          osDelay(5);
   }
   /* USER CODE END TMP_task */
 }
@@ -691,34 +978,68 @@ void TMP_task(void const * argument)
 void UI_task(void const * argument)
 {
   /* USER CODE BEGIN UI_task */
+
+	static int last_rpm = -1;
+	char rpmm[16];
+
+	static int last_deg = -1;
+	char degg[16];
+
+	static int last_tps = -1;
+	char tpss[16];
+	osMutexWait(I2C_mutexHandle, osWaitForever);
+	HD44780_Init(2);
+	HD44780_Clear();
+	osMutexRelease(I2C_mutexHandle);
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+
+	  if (rpm_A != last_rpm)
+	  {
+	    last_rpm = rpm_A;
+	    // LCD更新
+	    	sprintf(rpmm,"%d",rpm_A);
+	    	osMutexWait(I2C_mutexHandle, osWaitForever);
+	        HD44780_SetCursor(0,0);
+	    	HD44780_PrintStr(rpmm);
+	    	osMutexRelease(I2C_mutexHandle);
+	        osDelay(500);
+	        //HD44780_Clear();
+	        //osMutexRelease(I2C_mutexHandle);
+	  }
+
+	  if (fdeg != last_deg)
+	 	  {
+	 	    last_deg = fdeg;
+	 	    // LCD更新
+	 	    	sprintf(degg,"%d",fdeg);
+	 	    	osMutexWait(I2C_mutexHandle, osWaitForever);
+	 	        HD44780_SetCursor(0,1);
+	 	    	HD44780_PrintStr(degg);
+	 	    	osMutexRelease(I2C_mutexHandle);
+	 	        osDelay(500);
+	 	        //HD44780_Clear();
+	 	        //osMutexRelease(I2C_mutexHandle);
+	 	  }
+	  if (THper != last_tps)
+	  	 	  {
+	  	 	    last_tps = THper;
+	  	 	    // LCD更新
+	  	 	    	sprintf(tpss,"%d",THper);
+	  	 	    	osMutexWait(I2C_mutexHandle, osWaitForever);
+	  	 	        HD44780_SetCursor(3,1);
+	  	 	    	HD44780_PrintStr(tpss);
+	  	 	        osDelay(500);
+	  	 	        HD44780_PrintStr("   ");
+	  	 	        osMutexRelease(I2C_mutexHandle);
+	  	 	        //HD44780_Clear();
+	  	 	        //osMutexRelease(I2C_mutexHandle);
+	  	 	  }
+
+    //HD44780_Clear();
   }
   /* USER CODE END UI_task */
-}
-
-/**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM11 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  /* USER CODE BEGIN Callback 0 */
-
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM11)
-  {
-    HAL_IncTick();
-  }
-  /* USER CODE BEGIN Callback 1 */
-
-  /* USER CODE END Callback 1 */
 }
 
 /**
