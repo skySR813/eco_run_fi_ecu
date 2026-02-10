@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <math.h>
 #include "liquidcrystal_i2c.h"
+#include "ecu_math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -39,8 +40,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define RPM_SIZE 8//マップサイズ変更はここで
-#define TPS_SIZE 6
+
 #define BASE_ANGLE 27//センサー基準位置あとでTDCで計算
 /* USER CODE END PD */
 
@@ -98,28 +98,7 @@ void UI_task(void const * argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-int rpm_axis[RPM_SIZE] = {1200, 2500, 3500, 4500, 5500, 6500, 7500, 8500};
-int tps_axis[TPS_SIZE] = {0, 10, 25, 40, 60, 100};
 
-double map_fuel[RPM_SIZE][TPS_SIZE] = {{16.5,16.0,15.5,14.7,14.2,13.8},
-		                               {16.8,16.2,15.0,14.7,14.0,13.6},
-									   {17.0,16.3,15.0,14.5,13.8,13.2},
-									   {17.0,16.2,14.8,14.2,13.5,13.0},
-									   {16.8,16.0,14.5,14.0,13.2,12.8},
-									   {16.5,15.8,14.2,13.8,13.0,12.6},
-									   {16.2,15.5,14.0,13.6,12.8,12.5},
-									   {16.0,15.2,13.8,13.5,12.7,12.4}}; //空燃比表示(デフォルト)
-
-int map_ign[RPM_SIZE][TPS_SIZE] = {
- {8,10,12,14,16,16},
- {12,16,20,22,24,24},
- {14,20,24,26,28,28},
- {16,22,26,28,30,30},
- {16,24,28,30,32,32},
- {14,22,26,28,30,30},
- {12,20,24,26,28,28},
- {10,18,22,24,26,26}
-};//進角角度表示(デフォルト)上死点前
 
 //可変進角管理用
 int rpm_pred = 1000;//予測RPM
@@ -127,10 +106,11 @@ int tps_prev = 0;
 // TPS → 加速度予測係数（調整ポイント）
 float accel_gain = 3.0;  // 数字を大きくすると加速予測が強くなる
 
-
+//各変数管理
 volatile int THper = 0;
 volatile int rpm_A = 0;
 volatile int fdeg = 0;
+volatile float tmp = 0;
 //速度、タイムなど
 double speedKmh = 0.0;
 double timesecmin = 0.0;
@@ -142,7 +122,8 @@ const float T0 = 298.15;       // 25℃ = 298.15K
 const float VREF = 3.3;        // 参照電圧
 const float R_FIXED = 10000.0; // 分圧抵抗 (10kΩ)
 
-// ピン定義 ※書き換えてね
+// ピン定義 ※書き換えてね→使わない
+/*
 const int Cranksensor_PIN = 3;
 const int Camsensor_PIN = 4;
 const int Igoutput_PIN = 10;
@@ -151,6 +132,7 @@ const int Throttlesensor_PIN = 26;//ADC 0
 const int Tmpsensor_PIN = 27;//ADC 1
 const int serial_1_TX = 0;//メインサブ通信用 GP0
 const int serial_1_RX = 1;//メインサブ通信用 GP1
+*/
 
 // ===== 点火用 =====
 volatile uint32_t crank_last_us = 0;
@@ -158,76 +140,38 @@ volatile uint32_t crank_period_us = 15000;
 volatile int32_t delay_us = 0;
 int dwell_count = 0;
 volatile int crank_flag = 0;
+volatile int32_t next_delay_us = 2000;
 
 
-// t = 0～256（固定小数点）で線形補間
-static inline int lerp_int(int a, int b, int t)
-{
-    return a + (((b - a) * t) >> 8);   // >>8 は ÷256
+
+
+void UIprint_int(volatile int com1,volatile int last_com1,char comm1[16],int yoko1,int tate1){
+	if(com1 != last_com1){
+		last_com1 = com1;
+		sprintf(comm1,"%d",com1);
+		osMutexWait(I2C_mutexHandle,osWaitForever);
+		HD44780_SetCursor(yoko1,tate1);
+		HD44780_PrintStr(comm1);
+		osDelay(500);
+		HD44780_PrintStr("    ");
+		osMutexRelease(I2C_mutexHandle);
+
+	}
+}
+void UIprint_float(volatile float com2,volatile int last_com2,char comm2[16],int yoko2,int tate2){
+	if(com2 != last_com2){
+		last_com2 = com2;
+		sprintf(comm2,"%f",com2);
+		osMutexWait(I2C_mutexHandle,osWaitForever);
+		HD44780_SetCursor(yoko2,tate2);
+		HD44780_PrintStr(comm2);
+		osDelay(500);
+		HD44780_PrintStr("    ");
+		osMutexRelease(I2C_mutexHandle);
+
+	}
 }
 
-static int findIndex(int valuea, const int *axis, int sizea)
-{
-    for (int i = 0; i < sizea - 1; i++) {
-        if (valuea >= axis[i] && valuea <= axis[i + 1]) {
-            return i;
-        }
-    }
-    return sizea - 2;
-}
-
-
-int getValue_f(int rpm, int tps, double mapp[RPM_SIZE][TPS_SIZE])
-{
-    // 区間インデックス
-    int i = findIndex(rpm, rpm_axis, RPM_SIZE);
-    int j = findIndex(tps,  tps_axis, TPS_SIZE);
-
-    // 補間係数を 0～256 に変換（固定小数点）
-    int t_rpm = ((rpm - rpm_axis[i]) << 8) / (rpm_axis[i+1] - rpm_axis[i]);
-    int t_tps = ((tps - tps_axis[j]) << 8) / (tps_axis[j+1] - tps_axis[j]);
-
-    // まずRPM方向補間
-    int v1 = lerp_int(mapp[i][j],     mapp[i+1][j],     t_rpm);
-    int v2 = lerp_int(mapp[i][j+1],   mapp[i+1][j+1],   t_rpm);
-
-    // 次にTPS方向補間
-    int result = lerp_int(v1, v2, t_tps);
-
-    return result;   // int のまま返す
-}
-
-int getValue_i(int rpm, int tps, int mapp[RPM_SIZE][TPS_SIZE])
-{
-    // 区間インデックス
-    int i = findIndex(rpm, rpm_axis, RPM_SIZE);
-    int j = findIndex(tps,  tps_axis, TPS_SIZE);
-
-    // 補間係数を 0～256 に変換（固定小数点）
-    int t_rpm = ((rpm - rpm_axis[i]) << 8) / (rpm_axis[i+1] - rpm_axis[i]);
-    int t_tps = ((tps - tps_axis[j]) << 8) / (tps_axis[j+1] - tps_axis[j]);
-
-    // まずRPM方向補間
-    int v1 = lerp_int(mapp[i][j],     mapp[i+1][j],     t_rpm);
-    int v2 = lerp_int(mapp[i][j+1],   mapp[i+1][j+1],   t_rpm);
-
-    // 次にTPS方向補間
-    int result = lerp_int(v1, v2, t_tps);
-
-    return result;   // int のまま返す
-}
-
-//温度計算
-float GetTMP(int TMPinput){
-  float voltage = (TMPinput / 4095.0) * VREF;//ADC値を電圧に変換
-  float resistance = (R_FIXED * voltage) / (VREF - voltage); // サーミスタの抵抗値計算
-
-  // Steinhart-Hart 方程式を用いて温度 (K) を算出
-    float temperatureK = 1.0f / ((1.0f / T0) + (1.0f / BETA) * logf(resistance / R25));
-
-    // 絶対温度 (K) から摂氏 (°C) に変換
-    return temperatureK - 273.15;
-  }
 /* USER CODE END 0 */
 
 /**
@@ -806,8 +750,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == EXTI0_crank_Pin)   // ← クランク入力ピンに合わせる
   {
-	crank_flag = 1;
-	//HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // デバッグ用
+	  uint32_t now = __HAL_TIM_GET_COUNTER(&htim2);
+	  crank_period_us = now - crank_last_us;
+	  crank_last_us = now;
+
+	  __HAL_TIM_SET_COUNTER(&htim3, 0);
+	  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, next_delay_us);
+	  HAL_TIM_OC_Start_IT(&htim3, TIM_CHANNEL_1);
   }
 }
 
@@ -846,19 +795,10 @@ void ig_Task(void const * argument)
 
   for(;;)
   {
-	  if (crank_flag)
-	      {
-	        crank_flag = 0;
-
-
-	        uint32_t now = __HAL_TIM_GET_COUNTER(&htim2);
-	        crank_period_us = now - crank_last_us;
-	        crank_last_us = now;
-
 	        rpm_A = 60000000UL / crank_period_us;
-	        if (rpm_A < 3000)      dwell_count = 120;
-	        else if (rpm_A < 6000) dwell_count = 80;
-	        else                   dwell_count = 50;
+	        if (rpm_A < 3000)      dwell_count = 1200;
+	        else if (rpm_A < 6000) dwell_count = 800;
+	        else                   dwell_count = 500;
 
 
 	        fdeg = getValue_i(rpm_A, THper, map_ign);
@@ -869,12 +809,12 @@ void ig_Task(void const * argument)
 	        delay_us = (sdeg * crank_period_us) / 360;
 	        if (delay_us < 50) delay_us = 50;
 	        if (delay_us > 60000) delay_us = 60000;
+	        next_delay_us = delay_us;
 
+	        //__HAL_TIM_SET_COUNTER(&htim3, 0);
+	        //__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, delay_us);
+	        //HAL_TIM_OC_Start_IT(&htim3, TIM_CHANNEL_1);
 
-	        __HAL_TIM_SET_COUNTER(&htim3, 0);
-	        __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, delay_us);
-	        HAL_TIM_OC_Start_IT(&htim3, TIM_CHANNEL_1);
-	      }
 
 	      osDelay(1);
 
@@ -957,7 +897,7 @@ void TMP_task(void const * argument)
 	  	  	              uint32_t tmpp = HAL_ADC_GetValue(&hadc2);
 
 	  	  	              // 温度℃変換
-	  	  	              double tmp = GetTMP(tmpp);
+	  	  	              tmp = GetTMP(tmpp);
 	  	  	          }
 
 	  	  	          // ADCの停止
@@ -987,6 +927,9 @@ void UI_task(void const * argument)
 
 	static int last_tps = -1;
 	char tpss[16];
+
+	static int last_tmp = -1;
+	char tmmp[16];
 	osMutexWait(I2C_mutexHandle, osWaitForever);
 	HD44780_Init(2);
 	HD44780_Clear();
@@ -994,50 +937,10 @@ void UI_task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-
-	  if (rpm_A != last_rpm)
-	  {
-	    last_rpm = rpm_A;
-	    // LCD更新
-	    	sprintf(rpmm,"%d",rpm_A);
-	    	osMutexWait(I2C_mutexHandle, osWaitForever);
-	        HD44780_SetCursor(0,0);
-	    	HD44780_PrintStr(rpmm);
-	    	osMutexRelease(I2C_mutexHandle);
-	        osDelay(500);
-	        //HD44780_Clear();
-	        //osMutexRelease(I2C_mutexHandle);
-	  }
-
-	  if (fdeg != last_deg)
-	 	  {
-	 	    last_deg = fdeg;
-	 	    // LCD更新
-	 	    	sprintf(degg,"%d",fdeg);
-	 	    	osMutexWait(I2C_mutexHandle, osWaitForever);
-	 	        HD44780_SetCursor(0,1);
-	 	    	HD44780_PrintStr(degg);
-	 	    	osMutexRelease(I2C_mutexHandle);
-	 	        osDelay(500);
-	 	        //HD44780_Clear();
-	 	        //osMutexRelease(I2C_mutexHandle);
-	 	  }
-	  if (THper != last_tps)
-	  	 	  {
-	  	 	    last_tps = THper;
-	  	 	    // LCD更新
-	  	 	    	sprintf(tpss,"%d",THper);
-	  	 	    	osMutexWait(I2C_mutexHandle, osWaitForever);
-	  	 	        HD44780_SetCursor(3,1);
-	  	 	    	HD44780_PrintStr(tpss);
-	  	 	        osDelay(500);
-	  	 	        HD44780_PrintStr("   ");
-	  	 	        osMutexRelease(I2C_mutexHandle);
-	  	 	        //HD44780_Clear();
-	  	 	        //osMutexRelease(I2C_mutexHandle);
-	  	 	  }
-
-    //HD44780_Clear();
+	  UIprint_int(rpm_A,last_rpm,rpmm,0,0);
+	  UIprint_int(fdeg,last_deg,degg,0,1);
+	  UIprint_int(THper,last_tps,tpss,3,1);
+	  UIprint_float(tmp,last_tmp,tmmp,6,1);
   }
   /* USER CODE END UI_task */
 }
