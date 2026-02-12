@@ -30,7 +30,7 @@ static void MX_GPIO_Init(void)
 #tGPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 #tHAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 #n#t/* EXTI interrupt init*/
-#tHAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+#tHAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
 #tHAL_NVIC_EnableIRQ(EXTI0_IRQn);#n#n
 #t/* USER CODE BEGIN MX_GPIO_Init_2 */
 #n

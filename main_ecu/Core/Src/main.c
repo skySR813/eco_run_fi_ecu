@@ -41,7 +41,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define BASE_ANGLE 27//センサー基準位置あとでTDCで計算
+#define BASE_ANGLE 40//センサー基準位置27では小さすぎた
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -57,6 +57,7 @@ I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart5;
 UART_HandleTypeDef huart2;
@@ -86,6 +87,7 @@ static void MX_TIM2_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_ADC2_Init(void);
+static void MX_TIM4_Init(void);
 void ig_Task(void const * argument);
 void fuel_task(void const * argument);
 void Throttle_task(void const * argument);
@@ -98,6 +100,30 @@ void UI_task(void const * argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+int rpm_axis[RPM_SIZE] = {1200, 2500, 3500, 4500, 5500, 6500, 7500, 8500};
+int tps_axis[TPS_SIZE] = {0, 10, 25, 40, 60, 100};
+
+double map_fuel[RPM_SIZE][TPS_SIZE] = {{16.5,16.0,15.5,14.7,14.2,13.8},
+		                               {16.8,16.2,15.0,14.7,14.0,13.6},
+									   {17.0,16.3,15.0,14.5,13.8,13.2},
+									   {17.0,16.2,14.8,14.2,13.5,13.0},
+									   {16.8,16.0,14.5,14.0,13.2,12.8},
+									   {16.5,15.8,14.2,13.8,13.0,12.6},
+									   {16.2,15.5,14.0,13.6,12.8,12.5},
+									   {16.0,15.2,13.8,13.5,12.7,12.4}}; //空燃比表示(デフォルト)
+
+int map_ign[RPM_SIZE][TPS_SIZE] = {
+ {8,10,12,14,16,16},
+ {12,16,20,22,24,24},
+ {14,20,24,26,28,28},
+ {16,22,26,28,30,30},
+ {16,24,28,30,32,32},
+ {14,22,26,28,30,30},
+ {12,20,24,26,28,28},
+ {10,18,22,24,26,26}
+};//進角角度表示(デフォルト)上死点前
+
 
 
 //可変進角管理用
@@ -115,12 +141,7 @@ volatile float tmp = 0;
 double speedKmh = 0.0;
 double timesecmin = 0.0;
 
-//温度管理用（センサーの定数など)
-const float BETA = 3435.0;     // サーミスタのB定数 103AT-2-34119
-const float R25 = 10000.0;     // 25℃でのサーミスタの抵抗値 (10kΩ)
-const float T0 = 298.15;       // 25℃ = 298.15K
-const float VREF = 3.3;        // 参照電圧
-const float R_FIXED = 10000.0; // 分圧抵抗 (10kΩ)
+
 
 // ピン定義 ※書き換えてね→使わない
 /*
@@ -138,7 +159,7 @@ const int serial_1_RX = 1;//メインサブ通信用 GP1
 volatile uint32_t crank_last_us = 0;
 volatile uint32_t crank_period_us = 15000;
 volatile int32_t delay_us = 0;
-int dwell_count = 0;
+int dwell_us = 0;
 volatile int crank_flag = 0;
 volatile int32_t next_delay_us = 2000;
 
@@ -210,6 +231,7 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM3_Init();
   MX_ADC2_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start(&htim2);   // 周期計測用
   HAL_TIM_Base_Start(&htim3);   // 点火遅延用
@@ -610,6 +632,64 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 179;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_OC_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+
+}
+
+/**
   * @brief UART5 Initialization Function
   * @param None
   * @retval None
@@ -711,7 +791,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
@@ -746,6 +826,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   }
 }
 */
+//クランク信号割り込み
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == EXTI0_crank_Pin)   // ← クランク入力ピンに合わせる
@@ -754,28 +835,42 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	  crank_period_us = now - crank_last_us;
 	  crank_last_us = now;
 
-	  __HAL_TIM_SET_COUNTER(&htim3, 0);
-	  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, next_delay_us);
-	  HAL_TIM_OC_Start_IT(&htim3, TIM_CHANNEL_1);
+	  uint32_t target = now + next_delay_us;
+
+	 // __HAL_TIM_SET_COUNTER(&htim3, 0);
+	  //__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, target);
+	  //HAL_TIM_OC_Start_IT(&htim3, TIM_CHANNEL_1);
+	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, target);
+	  HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_1);
   }
 }
 
 void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  if (htim->Instance == TIM3)
+{//点火開始
+  if (htim->Instance == TIM2)
   {
     HAL_GPIO_WritePin(IG_output_GPIO_Port, IG_output_Pin, GPIO_PIN_SET); // IGN ON
     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin,GPIO_PIN_SET); // デバッグ用
 
-    for (volatile int i = 0; i < dwell_count; i++); // ≒50µs
+    // TIM4カウンタリセット
+        __HAL_TIM_SET_COUNTER(&htim4, 0);
 
-    HAL_GPIO_WritePin(IG_output_GPIO_Port, IG_output_Pin, GPIO_PIN_RESET); // IGN OFF
-    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin,GPIO_PIN_RESET); // デバッグ用
+        // dwell時間セット
+        __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, dwell_us);
+
+        HAL_TIM_OC_Start_IT(&htim4, TIM_CHANNEL_1);
 
 
-    HAL_TIM_OC_Stop_IT(&htim3, TIM_CHANNEL_1);
-  }
+   // HAL_TIM_OC_Stop_IT(&htim3, TIM_CHANNEL_1);
+  }//点火終わり
+  else if (htim->Instance == TIM4)
+    {
+        // Spark OFF
+        HAL_GPIO_WritePin(IG_output_GPIO_Port, IG_output_Pin, GPIO_PIN_RESET);
+        HAL_TIM_OC_Stop_IT(&htim4, TIM_CHANNEL_1);
+    }
 }
+
 
 
 /* USER CODE END 4 */
@@ -796,9 +891,9 @@ void ig_Task(void const * argument)
   for(;;)
   {
 	        rpm_A = 60000000UL / crank_period_us;
-	        if (rpm_A < 3000)      dwell_count = 1200;
-	        else if (rpm_A < 6000) dwell_count = 800;
-	        else                   dwell_count = 500;
+	        if (rpm_A < 3000)      dwell_us = 3000;
+	        else if (rpm_A < 6000) dwell_us = 2000;
+	        else                   dwell_us = 1500;
 
 
 	        fdeg = getValue_i(rpm_A, THper, map_ign);
