@@ -1,5 +1,0 @@
-void ig_Task(void const * argument);
-void fuel_task(void const * argument);
-void Throttle_task(void const * argument);
-void TMP_task(void const * argument);
-void UI_task(void const * argument);#n

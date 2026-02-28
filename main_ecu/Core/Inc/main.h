@@ -60,6 +60,9 @@ void Error_Handler(void);
 #define EXTI0_crank_Pin GPIO_PIN_0
 #define EXTI0_crank_GPIO_Port GPIOC
 #define EXTI0_crank_EXTI_IRQn EXTI0_IRQn
+#define EXTI1_cam_Pin GPIO_PIN_1
+#define EXTI1_cam_GPIO_Port GPIOC
+#define EXTI1_cam_EXTI_IRQn EXTI1_IRQn
 #define TH_per_adcinput_Pin GPIO_PIN_1
 #define TH_per_adcinput_GPIO_Port GPIOA
 #define USART_TX_Pin GPIO_PIN_2
@@ -70,6 +73,8 @@ void Error_Handler(void);
 #define tmp_adcinput_GPIO_Port GPIOA
 #define LD2_Pin GPIO_PIN_5
 #define LD2_GPIO_Port GPIOA
+#define fuel_output_Pin GPIO_PIN_9
+#define fuel_output_GPIO_Port GPIOA
 #define IG_output_Pin GPIO_PIN_10
 #define IG_output_GPIO_Port GPIOA
 #define TMS_Pin GPIO_PIN_13

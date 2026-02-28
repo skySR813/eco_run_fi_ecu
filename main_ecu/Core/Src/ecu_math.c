@@ -30,7 +30,7 @@ int findIndex(int valuea, const int *axis, int sizea)
 }
 
 
-int getValue_f(int rpm, int tps, double mapp[RPM_SIZE][TPS_SIZE])
+int getValue_i(int rpm, int tps, int mapp[RPM_SIZE][TPS_SIZE])
 {
     // 区間インデックス
     int i = findIndex(rpm, rpm_axis, RPM_SIZE);
@@ -50,24 +50,41 @@ int getValue_f(int rpm, int tps, double mapp[RPM_SIZE][TPS_SIZE])
     return result;   // int のまま返す
 }
 
-int getValue_i(int rpm, int tps, int mapp[RPM_SIZE][TPS_SIZE])
+
+
+float lerp_f(float a, float b, float t)
 {
-    // 区間インデックス
+    return a + (b - a) * t;
+}
+
+
+float getValue_f(int rpm, int tps, float mapp[RPM_SIZE][TPS_SIZE])
+{
+    // 区間インデックス取得
     int i = findIndex(rpm, rpm_axis, RPM_SIZE);
     int j = findIndex(tps,  tps_axis, TPS_SIZE);
 
-    // 補間係数を 0～256 に変換（固定小数点）
-    int t_rpm = ((rpm - rpm_axis[i]) << 8) / (rpm_axis[i+1] - rpm_axis[i]);
-    int t_tps = ((tps - tps_axis[j]) << 8) / (tps_axis[j+1] - tps_axis[j]);
+    // 補間係数（0.0～1.0）
+    float t_rpm = (float)(rpm - rpm_axis[i]) /
+                  (float)(rpm_axis[i+1] - rpm_axis[i]);
 
-    // まずRPM方向補間
-    int v1 = lerp_int(mapp[i][j],     mapp[i+1][j],     t_rpm);
-    int v2 = lerp_int(mapp[i][j+1],   mapp[i+1][j+1],   t_rpm);
+    float t_tps = (float)(tps - tps_axis[j]) /
+                  (float)(tps_axis[j+1] - tps_axis[j]);
 
-    // 次にTPS方向補間
-    int result = lerp_int(v1, v2, t_tps);
+    // 安全クランプ
+    if (t_rpm < 0.0f) t_rpm = 0.0f;
+    if (t_rpm > 1.0f) t_rpm = 1.0f;
+    if (t_tps < 0.0f) t_tps = 0.0f;
+    if (t_tps > 1.0f) t_tps = 1.0f;
 
-    return result;   // int のまま返す
+    // RPM方向補間
+    float v1 = lerp_f(mapp[i][j],   mapp[i+1][j],   t_rpm);
+    float v2 = lerp_f(mapp[i][j+1], mapp[i+1][j+1], t_rpm);
+
+    // TPS方向補間（バイリニア）
+    float result = lerp_f(v1, v2, t_tps);
+
+    return result;
 }
 
 //温度計算
