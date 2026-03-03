@@ -25,7 +25,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ecu_math.h"
+#include "ecu_data.h"
+#include "ecu_config.h"
+#include "adc.h"
+#include "ecu_UI.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -180,6 +184,27 @@ void ig_Task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
+	  rpm_A = 60000000UL / crank_period_us;
+	  	        if (rpm_A < 3000)      dwell_us = 3000;
+	  	        else if (rpm_A < 6000) dwell_us = 2000;
+	  	        else                   dwell_us = 1500;
+
+
+	  	        fdeg = getValue_i(rpm_A, THper, current_map.map_ign);
+	  	        if (fdeg < 0)  fdeg = 0;
+	  	        if (fdeg > 35) fdeg = 35;
+
+	  	        int32_t sdeg = BASE_ANGLE - fdeg;
+	  	        delay_us = (sdeg * crank_period_us) / 360;
+	  	        if (delay_us < 50) delay_us = 50;
+	  	        if (delay_us > 60000) delay_us = 60000;
+	  	        next_delay_us = delay_us;
+
+	  	        //__HAL_TIM_SET_COUNTER(&htim3, 0);
+	  	        //__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, delay_us);
+	  	        //HAL_TIM_OC_Start_IT(&htim3, TIM_CHANNEL_1);
+
+
     osDelay(1);
   }
   /* USER CODE END ig_Task */
@@ -198,7 +223,33 @@ void fuel_task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	  // ① マップからAFR取得
+	       AFR_target = getValue_f(rpm_A,THper,current_map.map_fuel);
+
+	       // 異常防止
+	       if(AFR_target < 10.0f) AFR_target = 10.0f;
+	       if(AFR_target > 18.0f) AFR_target = 18.0f;
+
+	       // ② 基本噴射時間計算
+	       T_inj_ms = T_base * (AFR_base / AFR_target);
+
+	       // ③ 温度補正（簡易）
+	       if(tmp < 60.0f)
+	       {
+	           T_inj_ms *= 1.10f;   // 冷間増量
+	       }
+
+	       // ④ インジェクタ無効時間加算
+	       T_inj_ms += inj_inv_ms;
+
+	       // ⑤ μs変換
+	       T_inj_us = T_inj_ms * 1000.0f;
+
+	       // 上限下限保護
+	       if(T_inj_us < 500)   T_inj_us = 500;
+	       if(T_inj_us > 20000) T_inj_us = 20000;
+
+	       osDelay(1);
   }
   /* USER CODE END fuel_task */
 }
@@ -216,7 +267,23 @@ void Throttle_task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	  // ADCの開始
+	 	  	          HAL_ADC_Start(&hadc1);
+
+	 	  	          // ADC変換が完了するまで待機
+	 	  	          if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)
+	 	  	          {
+	 	  	              // ADCの値を取得
+	 	  	              uint32_t TH = HAL_ADC_GetValue(&hadc1);
+
+	 	  	              // ADCの最大値（12ビット分解能の場合：4095）を基に百分率に変換
+	 	  	              THper = (TH * 100) / 4095;
+	 	  	          }
+
+	 	  	          // ADCの停止
+	 	  	          HAL_ADC_Stop(&hadc1);
+
+	 	  	          osDelay(5);
   }
   /* USER CODE END Throttle_task */
 }
@@ -234,7 +301,22 @@ void TMP_task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	  HAL_ADC_Start(&hadc2);
+
+	  	  	  	          // ADC変換が完了するまで待機
+	  	  	  	          if (HAL_ADC_PollForConversion(&hadc2, 100) == HAL_OK)
+	  	  	  	          {
+	  	  	  	              // ADCの値を取得
+	  	  	  	              uint32_t tmpp = HAL_ADC_GetValue(&hadc2);
+
+	  	  	  	              // 温度℃変換
+	  	  	  	              tmp = GetTMP(tmpp);
+	  	  	  	          }
+
+	  	  	  	          // ADCの停止
+	  	  	  	          HAL_ADC_Stop(&hadc2);
+
+	  	  	  	          osDelay(5);
   }
   /* USER CODE END TMP_task */
 }
@@ -249,10 +331,28 @@ void TMP_task(void const * argument)
 void UI_task(void const * argument)
 {
   /* USER CODE BEGIN UI_task */
+	static int last_rpm = -1;
+		char rpmm[16];
+
+		static int last_deg = -1;
+		char degg[16];
+
+		static int last_tps = -1;
+		char tpss[16];
+
+		static int last_tmp = -1;
+		char tmmp[16];
+		osMutexWait(I2C_mutexHandle, osWaitForever);
+		HD44780_Init(2);
+		HD44780_Clear();
+		osMutexRelease(I2C_mutexHandle);
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	  UIprint_int(rpm_A,last_rpm,rpmm,0,0);
+	  UIprint_int(fdeg,last_deg,degg,0,1);
+	  UIprint_int(THper,last_tps,tpss,3,1);
+	  UIprint_float(tmp,last_tmp,tmmp,6,1);
   }
   /* USER CODE END UI_task */
 }

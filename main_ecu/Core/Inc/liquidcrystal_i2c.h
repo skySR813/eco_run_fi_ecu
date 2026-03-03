@@ -2,6 +2,7 @@
 #define LIQUIDCRYSTAL_I2C_H_
 
 #include "stm32f4xx_hal.h"
+#include "i2c.h"
 //#include "stm32f3xx_hal.h"
 
 /* Command */

@@ -1,13 +1,11 @@
 #ifndef ECU_MATH_H_
 #define ECU_MATH_H_
 
-#define RPM_SIZE 8//マップサイズ変更はここで
-#define TPS_SIZE 6
+#include "ecu_config.h"
 
-extern int rpm_axis[RPM_SIZE];
-extern int tps_axis[TPS_SIZE];
-extern int map_ign[RPM_SIZE][TPS_SIZE];
-extern float map_fuel[RPM_SIZE][TPS_SIZE];
+#define BASE_ANGLE 40//センサー基準位置
+
+
 
 
 

@@ -1,7 +1,8 @@
 #include "ecu_math.h"
 #include <stdio.h>
 #include <math.h>
-
+#include "ecu_data.h"
+//#include "ecu_config.h"
 
 
 
@@ -33,12 +34,12 @@ int findIndex(int valuea, const int *axis, int sizea)
 int getValue_i(int rpm, int tps, int mapp[RPM_SIZE][TPS_SIZE])
 {
     // 区間インデックス
-    int i = findIndex(rpm, rpm_axis, RPM_SIZE);
-    int j = findIndex(tps,  tps_axis, TPS_SIZE);
+    int i = findIndex(rpm, current_map.rpm_axis, RPM_SIZE);
+    int j = findIndex(tps,  current_map.tps_axis, TPS_SIZE);
 
     // 補間係数を 0～256 に変換（固定小数点）
-    int t_rpm = ((rpm - rpm_axis[i]) << 8) / (rpm_axis[i+1] - rpm_axis[i]);
-    int t_tps = ((tps - tps_axis[j]) << 8) / (tps_axis[j+1] - tps_axis[j]);
+    int t_rpm = ((rpm - current_map.rpm_axis[i]) << 8) / (current_map.rpm_axis[i+1] - current_map.rpm_axis[i]);
+    int t_tps = ((tps - current_map.tps_axis[j]) << 8) / (current_map.tps_axis[j+1] - current_map.tps_axis[j]);
 
     // まずRPM方向補間
     int v1 = lerp_int(mapp[i][j],     mapp[i+1][j],     t_rpm);
@@ -61,15 +62,15 @@ float lerp_f(float a, float b, float t)
 float getValue_f(int rpm, int tps, float mapp[RPM_SIZE][TPS_SIZE])
 {
     // 区間インデックス取得
-    int i = findIndex(rpm, rpm_axis, RPM_SIZE);
-    int j = findIndex(tps,  tps_axis, TPS_SIZE);
+    int i = findIndex(rpm, current_map.rpm_axis, RPM_SIZE);
+    int j = findIndex(tps,  current_map.tps_axis, TPS_SIZE);
 
     // 補間係数（0.0～1.0）
-    float t_rpm = (float)(rpm - rpm_axis[i]) /
-                  (float)(rpm_axis[i+1] - rpm_axis[i]);
+    float t_rpm = (float)(rpm - current_map.rpm_axis[i]) /
+                  (float)(current_map.rpm_axis[i+1] - current_map.rpm_axis[i]);
 
-    float t_tps = (float)(tps - tps_axis[j]) /
-                  (float)(tps_axis[j+1] - tps_axis[j]);
+    float t_tps = (float)(tps - current_map.tps_axis[j]) /
+                  (float)(current_map.tps_axis[j+1] - current_map.tps_axis[j]);
 
     // 安全クランプ
     if (t_rpm < 0.0f) t_rpm = 0.0f;

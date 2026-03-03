@@ -37,6 +37,8 @@
 #include "liquidcrystal_i2c.h"
 #include "ecu_math.h"
 #include "ee24.h"
+#include "ecu_data.h"
+#include "ecu_config.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,7 +49,9 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define BASE_ANGLE 40//センサー基準位置27では小さすぎた
+
+
+//↑バージョン情報も保存させているときはその分のサイズも足す
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -71,95 +75,11 @@ void MX_FREERTOS_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-int rpm_axis[RPM_SIZE] = {1200, 2500, 3500, 4500, 5500, 6500, 7500, 8500};
-int tps_axis[TPS_SIZE] = {0, 10, 25, 40, 60, 100};
-
-float map_fuel[RPM_SIZE][TPS_SIZE] = {{16.5,16.0,15.5,14.7,14.2,13.8},
-		                               {16.8,16.2,15.0,14.7,14.0,13.6},
-									   {17.0,16.3,15.0,14.5,13.8,13.2},
-									   {17.0,16.2,14.8,14.2,13.5,13.0},
-									   {16.8,16.0,14.5,14.0,13.2,12.8},
-									   {16.5,15.8,14.2,13.8,13.0,12.6},
-									   {16.2,15.5,14.0,13.6,12.8,12.5},
-									   {16.0,15.2,13.8,13.5,12.7,12.4}}; //空燃比表示(デフォルト)
-
-int map_ign[RPM_SIZE][TPS_SIZE] = {
- {8,10,12,14,16,16},
- {12,16,20,22,24,24},
- {14,20,24,26,28,28},
- {16,22,26,28,30,30},
- {16,24,28,30,32,32},
- {14,22,26,28,30,30},
- {12,20,24,26,28,28},
- {10,18,22,24,26,26}
-};//進角角度表示(デフォルト)上死点前
-
-
-
-//可変進角管理用
-//int rpm_pred = 1000;//予測RPM
-//int tps_prev = 0;
-// TPS → 加速度予測係数（調整ポイント）
-//float accel_gain = 3.0;  // 数字を大きくすると加速予測が強くなる
-
-//各変数管理
-volatile int THper = 0;
-volatile int rpm_A = 0;
-volatile int fdeg = 0;
-volatile float AFR_target = 0;
-volatile float T_inj_ms = 0;
-volatile float T_inj_us = 0;
 
 
 
 
-//燃料用
-//インジェクター無効噴射時間
-float inj_inv_ms = 1.0;
-float AFR_base = 14.7f;
-float T_base = 6.5f;
 
-volatile float tmp = 0;
-//速度、タイムなど
-//float speedKmh = 0.0;
-float timesecmin = 0.0;
-
-
-// ===== 点火用 =====
-volatile uint32_t crank_last_us = 0;
-volatile uint32_t crank_period_us = 15000;
-volatile int32_t delay_us = 0;
-int dwell_us = 0;
-volatile int crank_flag = 0;
-volatile int32_t next_delay_us = 2000;
-
-
-
-
-void UIprint_int(int com1,int *last_com1,char comm1[16],int yoko1,int tate1){
-	if(com1 != *last_com1){
-		*last_com1 = com1;
-		sprintf(comm1,"%4d",com1);
-		//osMutexWait(I2C_mutexHandle,osWaitForever);
-		HD44780_SetCursor(yoko1,tate1);
-		HD44780_PrintStr(comm1);
-		//osDelay(100);
-		//HD44780_PrintStr("    ");
-		//osMutexRelease(I2C_mutexHandle);
-
-	}
-}
-
-void UIprint_float(float com2,float *last_com2,char comm2[16],int yoko2,int tate2)
-{
-    if (fabsf(com2 - *last_com2) > 0.05f)
-    {
-        snprintf(comm2,16,"%4.1f",com2);
-        HD44780_SetCursor(yoko2,tate2);
-        HD44780_PrintStr(comm2);
-        *last_com2 = com2;
-    }
-}
 /*
 void UIprint_float(float com2,float *last_com2,char comm2[16],int yoko2,int tate2){
 	if(com2 != *last_com2){
@@ -222,7 +142,69 @@ int main(void)
   HAL_TIM_Base_Start(&htim3);   // 点火遅延用
   HAL_TIM_Base_Start(&htim5);   //燃料噴射時間用
   // EEPROM を初期化
+  if( EE24_Init(&hee24, &hi2c3, EE24_ADDRESS_DEFAULT) ){
 
+          EE24_Read(&hee24, 0x0000, raw_map, MAP_SIZE, 1000);
+  }
+  uint32_t index = 0;
+  //RPM軸
+  for(int i=0;i<RPM_SIZE;i++){
+	  current_map.rpm_axis_ee[i] = raw_map[index] | (raw_map[index+1] << 8);
+	  index += 2;
+  }
+  // TPS軸
+  for(int i=0;i<TPS_SIZE;i++){
+      current_map.tps_axis_ee[i] = raw_map[index] | (raw_map[index+1] << 8);
+      index += 2;
+  }
+
+  // AFRマップ
+  for(int r=0;r<RPM_SIZE;r++){
+      for(int t=0;t<TPS_SIZE;t++){
+          current_map.map_fuel_raw_ee[r][t] =
+              raw_map[index] | (raw_map[index+1] << 8);
+
+          current_map.fuel_map_ee[r][t] =
+              current_map.map_fuel_raw_ee[r][t] / 1000.0f;
+
+          index += 2;
+      }
+  }
+
+  // 点火マップ
+  for(int r=0;r<RPM_SIZE;r++){
+      for(int t=0;t<TPS_SIZE;t++){
+          current_map.map_ign_ee[r][t] =
+              raw_map[index] | (raw_map[index+1] << 8);
+          index += 2;
+      }
+  }
+
+  // CRC
+  uint16_t crc_read =
+      raw_map[index] | (raw_map[index+1] << 8);
+
+  //デフォルトを使うかEEPROM版を使うか判断
+  if(index != MAP_SIZE)
+  {
+	  HD44780_SetCursor(0,0);
+	  HD44780_PrintStr("error! use dmap");
+	  HAL_Delay(100);
+	  current_map = default_map;
+  }else{
+	  for(int i=0;i<RPM_SIZE;i++)
+	          current_map.rpm_axis[i] = current_map.rpm_axis_ee[i];
+
+	      for(int i=0;i<TPS_SIZE;i++)
+	          current_map.tps_axis[i] = current_map.tps_axis_ee[i];
+
+	      for(int r=0;r<RPM_SIZE;r++){
+	          for(int t=0;t<TPS_SIZE;t++){
+	              current_map.map_fuel[r][t] = current_map.fuel_map_ee[r][t];
+	              current_map.map_ign[r][t]  = current_map.map_ign_ee[r][t];
+	          }
+	      }
+  }
 
 
 
@@ -418,6 +400,7 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
+
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)

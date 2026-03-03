@@ -117,7 +117,7 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* i2cHandle)
   else if(i2cHandle->Instance==I2C3)
   {
   /* USER CODE BEGIN I2C3_MspInit 0 */
-
+	__HAL_RCC_I2C2_CLK_ENABLE();  // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<  add manualy
   /* USER CODE END I2C3_MspInit 0 */
 
     __HAL_RCC_GPIOC_CLK_ENABLE();
