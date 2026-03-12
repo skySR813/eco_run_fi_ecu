@@ -21,10 +21,14 @@ typedef struct{
 extern const mapdata default_map;
 extern mapdata current_map;
 
+extern uint8_t raw_map[MAP_SIZE];
+
 extern volatile int THper;
 extern volatile int rpm_A;
 extern volatile int fdeg;
+extern volatile int fdeg_ui;
 extern volatile float AFR_target;
+extern volatile float AFR_targett; //表示用
 extern volatile float T_inj_ms;
 extern volatile float T_inj_us;
 

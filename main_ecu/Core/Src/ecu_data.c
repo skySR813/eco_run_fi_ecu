@@ -34,7 +34,9 @@ mapdata current_map;
 volatile int THper = 0;
 volatile int rpm_A = 0;
 volatile int fdeg = 0;
+volatile int fdeg_ui = 0;
 volatile float AFR_target = 0;
+volatile float AFR_targett = 0;
 volatile float T_inj_ms = 0;
 volatile float T_inj_us = 0;
 

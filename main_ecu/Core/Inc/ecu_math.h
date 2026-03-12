@@ -3,11 +3,6 @@
 
 #include "ecu_config.h"
 
-#define BASE_ANGLE 40//センサー基準位置
-
-
-
-
 
 // t = 0～256（固定小数点）で線形補間
 int lerp_int(int a, int b, int t);

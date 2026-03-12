@@ -25,6 +25,7 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "adc.h"
+#include "crc.h"
 #include "i2c.h"
 #include "tim.h"
 #include "usart.h"
@@ -34,11 +35,14 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 #include "liquidcrystal_i2c.h"
 #include "ecu_math.h"
 #include "ee24.h"
 #include "ecu_data.h"
 #include "ecu_config.h"
+#include "FreeRTOS.h"
+#include "task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -80,22 +84,20 @@ void MX_FREERTOS_Init(void);
 
 
 
-/*
-void UIprint_float(float com2,float *last_com2,char comm2[16],int yoko2,int tate2){
-	if(com2 != *last_com2){
-		*last_com2 = com2;
-		sprintf(comm2,"%4.1f",com2);
-		osMutexWait(I2C_mutexHandle,osWaitForever);
-		HD44780_SetCursor(yoko2,tate2);
-		HD44780_PrintStr(comm2);
-		osDelay(50);
-		HD44780_PrintStr("    ");
-		osMutexRelease(I2C_mutexHandle);
-
+uint16_t calc_crc16(uint8_t *data, uint32_t length)
+{
+	if(length > MAP_SIZE){
+		length = MAP_SIZE;
 	}
-}
-*/
+    static uint32_t buffer[(MAP_SIZE + 3) / 4];
+    memset(buffer, 0, sizeof(buffer));
+    memcpy(buffer, data, length);
 
+    uint32_t crc32 = HAL_CRC_Calculate(&hcrc, buffer, (length + 3) / 4);
+
+    return (uint16_t)(crc32 & 0xFFFF); // 下位16bit使用
+    //return crc32;
+}
 /* USER CODE END 0 */
 
 /**
@@ -137,15 +139,33 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM5_Init();
   MX_I2C3_Init();
+  MX_CRC_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start(&htim2);   // 周期計測用
   HAL_TIM_Base_Start(&htim3);   // 点火遅延用
   HAL_TIM_Base_Start(&htim5);   //燃料噴射時間用
+  HD44780_Init(1);
+  HD44780_Clear();
+  HD44780_PrintStr("1");
+  HAL_Delay(500);
+  for(int addr=0; addr<128; addr++)
+  {
+      if(HAL_I2C_IsDeviceReady(&hi2c3, addr<<1, 1, 10) == HAL_OK)
+      {
+          printf("I2C device: 0x%02X\n",addr);
+      }
+  }
+  //HAL_Delay(10000);
   // EEPROM を初期化
   if( EE24_Init(&hee24, &hi2c3, EE24_ADDRESS_DEFAULT) ){
-
-          EE24_Read(&hee24, 0x0000, raw_map, MAP_SIZE, 1000);
+	  HD44780_PrintStr("2");
+	  HAL_Delay(500);
+      EE24_Read(&hee24, 0x0000, raw_map, MAP_SIZE, 1000);
+      HD44780_PrintStr("3");
+      HAL_Delay(500);
   }
+  HD44780_PrintStr("4");
+  HAL_Delay(500);
   uint32_t index = 0;
   //RPM軸
   for(int i=0;i<RPM_SIZE;i++){
@@ -165,7 +185,7 @@ int main(void)
               raw_map[index] | (raw_map[index+1] << 8);
 
           current_map.fuel_map_ee[r][t] =
-              current_map.map_fuel_raw_ee[r][t] / 1000.0f;
+              current_map.map_fuel_raw_ee[r][t] / 1000.0f;//小数点マップに戻す
 
           index += 2;
       }
@@ -180,16 +200,15 @@ int main(void)
       }
   }
 
-  // CRC
-  uint16_t crc_read =
-      raw_map[index] | (raw_map[index+1] << 8);
+
 
   //デフォルトを使うかEEPROM版を使うか判断
-  if(index != MAP_SIZE)
+  if(index != MAP_SIZE /* || crc_calc != crc_read */ )
   {
 	  HD44780_SetCursor(0,0);
 	  HD44780_PrintStr("error! use dmap");
 	  HAL_Delay(100);
+	  //for(volatile int i=0;i<2000000;i++);
 	  current_map = default_map;
   }else{
 	  for(int i=0;i<RPM_SIZE;i++)
@@ -394,6 +413,28 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 /* USER CODE END 4 */
 
 /**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM6 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM6)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
+
+/**
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
@@ -405,6 +446,8 @@ void Error_Handler(void)
   __disable_irq();
   while (1)
   {
+	  HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+	  HAL_Delay(200);
   }
   /* USER CODE END Error_Handler_Debug */
 }

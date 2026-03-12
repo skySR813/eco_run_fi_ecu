@@ -39,6 +39,9 @@ void EE24_UnLock(EE24_HandleTypeDef *Handle);
 
 void EE24_Delay(uint32_t Delay)
 {
+	//uint32_t start = HAL_GetTick();
+	//while(HAL_GetTick() - start < Delay);
+
 #if EE24_RTOS == EE24_RTOS_DISABLE
   HAL_Delay(Delay);
 #elif (EE24_RTOS == EE24_RTOS_CMSIS_V1) || (EE24_RTOS == EE24_RTOS_CMSIS_V2)
@@ -52,6 +55,7 @@ void EE24_Delay(uint32_t Delay)
     d = 1;
   tx_thread_sleep(d);
 #endif
+
 }
 
 /***********************************************************************************************************/

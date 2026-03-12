@@ -20,8 +20,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f4xx_it.h"
-#include "FreeRTOS.h"
-#include "task.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -58,10 +56,13 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern I2C_HandleTypeDef hi2c3;
 extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim3;
 extern TIM_HandleTypeDef htim4;
 extern TIM_HandleTypeDef htim5;
+extern TIM_HandleTypeDef htim6;
+
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -90,11 +91,12 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+	__BKPT(0);   // デバッガで停止
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
     /* USER CODE BEGIN W1_HardFault_IRQn 0 */
+
     /* USER CODE END W1_HardFault_IRQn 0 */
   }
 }
@@ -155,21 +157,6 @@ void DebugMon_Handler(void)
   /* USER CODE BEGIN DebugMonitor_IRQn 1 */
 
   /* USER CODE END DebugMonitor_IRQn 1 */
-}
-
-/**
-  * @brief This function handles System tick timer.
-  */
-void SysTick_Handler(void)
-{
-  /* USER CODE BEGIN SysTick_IRQn 0 */
-	HAL_IncTick();
-	xPortSysTickHandler();   // FreeRTOS tick
-
-  /* USER CODE END SysTick_IRQn 0 */
-  /* USER CODE BEGIN SysTick_IRQn 1 */
-
-  /* USER CODE END SysTick_IRQn 1 */
 }
 
 /******************************************************************************/
@@ -261,6 +248,48 @@ void TIM5_IRQHandler(void)
   /* USER CODE BEGIN TIM5_IRQn 1 */
 
   /* USER CODE END TIM5_IRQn 1 */
+}
+
+/**
+  * @brief This function handles TIM6 global interrupt and DAC1, DAC2 underrun error interrupts.
+  */
+void TIM6_DAC_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM6_DAC_IRQn 0 */
+
+  /* USER CODE END TIM6_DAC_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim6);
+  /* USER CODE BEGIN TIM6_DAC_IRQn 1 */
+
+  /* USER CODE END TIM6_DAC_IRQn 1 */
+}
+
+/**
+  * @brief This function handles I2C3 event interrupt.
+  */
+void I2C3_EV_IRQHandler(void)
+{
+  /* USER CODE BEGIN I2C3_EV_IRQn 0 */
+
+  /* USER CODE END I2C3_EV_IRQn 0 */
+  HAL_I2C_EV_IRQHandler(&hi2c3);
+  /* USER CODE BEGIN I2C3_EV_IRQn 1 */
+
+  /* USER CODE END I2C3_EV_IRQn 1 */
+}
+
+/**
+  * @brief This function handles I2C3 error interrupt.
+  */
+void I2C3_ER_IRQHandler(void)
+{
+  /* USER CODE BEGIN I2C3_ER_IRQn 0 */
+
+  /* USER CODE END I2C3_ER_IRQn 0 */
+  HAL_I2C_ER_IRQHandler(&hi2c3);
+  /* USER CODE BEGIN I2C3_ER_IRQn 1 */
+
+  /* USER CODE END I2C3_ER_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */

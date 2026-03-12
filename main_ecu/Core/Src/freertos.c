@@ -30,6 +30,7 @@
 #include "ecu_config.h"
 #include "adc.h"
 #include "ecu_UI.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -184,10 +185,7 @@ void ig_Task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-	  rpm_A = 60000000UL / crank_period_us;
-	  	        if (rpm_A < 3000)      dwell_us = 3000;
-	  	        else if (rpm_A < 6000) dwell_us = 2000;
-	  	        else                   dwell_us = 1500;
+
 
 
 	  	        fdeg = getValue_i(rpm_A, THper, current_map.map_ign);
@@ -316,7 +314,7 @@ void TMP_task(void const * argument)
 	  	  	  	          // ADCの停止
 	  	  	  	          HAL_ADC_Stop(&hadc2);
 
-	  	  	  	          osDelay(5);
+	  	  	  	          osDelay(15);
   }
   /* USER CODE END TMP_task */
 }
@@ -340,19 +338,25 @@ void UI_task(void const * argument)
 		static int last_tps = -1;
 		char tpss[16];
 
-		static int last_tmp = -1;
+		static float last_tmp = -1;
 		char tmmp[16];
-		osMutexWait(I2C_mutexHandle, osWaitForever);
-		HD44780_Init(2);
-		HD44780_Clear();
-		osMutexRelease(I2C_mutexHandle);
+
+		static float last_fuel = -1;
+		char fuell[16];
+
+		UIprint_init();
   /* Infinite loop */
   for(;;)
   {
-	  UIprint_int(rpm_A,last_rpm,rpmm,0,0);
-	  UIprint_int(fdeg,last_deg,degg,0,1);
-	  UIprint_int(THper,last_tps,tpss,3,1);
-	  UIprint_float(tmp,last_tmp,tmmp,6,1);
+	  UIprint_int(rpm_A,&last_rpm,rpmm,0,0);
+	  UIprint_float(AFR_targett,&last_fuel,fuell,6,0);
+
+	  UIprint_int(fdeg_ui,&last_deg,degg,0,1);
+	  UIprint_int(THper,&last_tps,tpss,3,1);
+	  UIprint_float(tmp,&last_tmp,tmmp,8,1);
+	  AFR_targett = AFR_target;
+	  fdeg_ui = fdeg;
+	  osDelay(200);
   }
   /* USER CODE END UI_task */
 }
