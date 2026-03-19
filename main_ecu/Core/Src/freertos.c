@@ -189,8 +189,15 @@ void ig_Task(void const * argument)
 
 
 	  	        fdeg = getValue_i(rpm_A, THper, current_map.map_ign);
+	  	        fdeg_ui = fdeg;
+
 	  	        if (fdeg < 0)  fdeg = 0;
 	  	        if (fdeg > 35) fdeg = 35;
+	  	        //アイドリング点火時期ずらし
+	  	        if(THper < 5 && rpm_A < 2000){
+	  	          if(rpm_A < 1400) fdeg += 3;
+	  	          if(rpm_A > 1600) fdeg -= 3;
+	  	         }
 
 	  	        int32_t sdeg = BASE_ANGLE - fdeg;
 	  	        delay_us = (sdeg * crank_period_us) / 360;
@@ -218,36 +225,67 @@ void ig_Task(void const * argument)
 void fuel_task(void const * argument)
 {
   /* USER CODE BEGIN fuel_task */
+	static TickType_t start_time = 0;
+	static uint8_t started = 0;
   /* Infinite loop */
   for(;;)
   {
-	  // ① マップからAFR取得
-	       AFR_target = getValue_f(rpm_A,THper,current_map.map_fuel);
 
-	       // 異常防止
-	       if(AFR_target < 10.0f) AFR_target = 10.0f;
-	       if(AFR_target > 18.0f) AFR_target = 18.0f;
 
-	       // ② 基本噴射時間計算
-	       T_inj_ms = T_base * (AFR_base / AFR_target);
+	  // --- クランキング ---
+	  if(rpm_A < 500)
+	  {
+	      if(tmp < 10)      T_inj_us = 9000;
+	      else if(tmp <30)  T_inj_us = 7000;
+	      else              T_inj_us = 5000;
+	  }
+	  else
+	  {
+	      // --- 通常燃料 ---
+	      AFR_target = getValue_f(rpm_A,THper,current_map.map_fuel);
 
-	       // ③ 温度補正（簡易）
-	       if(tmp < 60.0f)
-	       {
-	           T_inj_ms *= 1.10f;   // 冷間増量
-	       }
+	      if(AFR_target < 10.0f) AFR_target = 10.0f;
+	      if(AFR_target > 18.0f) AFR_target = 18.0f;
 
-	       // ④ インジェクタ無効時間加算
-	       T_inj_ms += inj_inv_ms;
+	      T_inj_ms = T_base * (AFR_base / AFR_target);
 
-	       // ⑤ μs変換
-	       T_inj_us = T_inj_ms * 1000.0f;
+	      //温度補正（簡易）
+	      if(tmp < 60.0f)
+	      {
+	          T_inj_ms *= 1.10f;
+	      }
 
-	       // 上限下限保護
-	       if(T_inj_us < 500)   T_inj_us = 500;
-	       if(T_inj_us > 20000) T_inj_us = 20000;
+	      //インジェクター無効噴射時間加算
+	      T_inj_ms += inj_inv_ms;
+	      //msからμsに変換
+	      T_inj_us = T_inj_ms * 1000.0f;
+	  }
 
-	       osDelay(1);
+	  // --- After Start ---
+	  if(started && rpm_A > 500)
+	  {
+	      if(xTaskGetTickCount() - start_time < pdMS_TO_TICKS(5000))
+	      {
+	          T_inj_us *= 1.2f;
+	      }
+	  }
+
+	  // --- TPS加速補正 ---
+	  static int last_TPS = 0;
+	  int dTPS = THper - last_TPS;
+
+	  if(dTPS > 5)
+	  {
+	      T_inj_us += 800;
+	  }
+	  last_TPS = THper;
+
+	  // --- LPF ---
+	  static float inj_filtered = 0;
+	  inj_filtered = inj_filtered * 0.7f + T_inj_us * 0.3f;
+	  T_inj_us = inj_filtered;
+
+	  osDelay(1);
   }
   /* USER CODE END fuel_task */
 }
@@ -350,12 +388,12 @@ void UI_task(void const * argument)
   {
 	  UIprint_int(rpm_A,&last_rpm,rpmm,0,0);
 	  UIprint_float(AFR_targett,&last_fuel,fuell,6,0);
+	  UIprint_int(fdeg_ui,&last_deg,degg,0,8);//???
+	  //UIprint_int(fdeg_ui,&last_deg,degg,1,1);
 
-	  UIprint_int(fdeg_ui,&last_deg,degg,0,1);
-	  UIprint_int(THper,&last_tps,tpss,3,1);
-	  UIprint_float(tmp,&last_tmp,tmmp,8,1);
+	  UIprint_int(THper,&last_tps,tpss,4,1);
+	  UIprint_float(tmp,&last_tmp,tmmp,9,1);
 	  AFR_targett = AFR_target;
-	  fdeg_ui = fdeg;
 	  osDelay(200);
   }
   /* USER CODE END UI_task */

@@ -144,7 +144,7 @@ int main(void)
   HAL_TIM_Base_Start(&htim2);   // 周期計測用
   HAL_TIM_Base_Start(&htim3);   // 点火遅延用
   HAL_TIM_Base_Start(&htim5);   //燃料噴射時間用
-  HD44780_Init(1);
+  HD44780_Init(2);
   HD44780_Clear();
   HD44780_PrintStr("1");
   HAL_Delay(500);
@@ -166,6 +166,8 @@ int main(void)
   }
   HD44780_PrintStr("4");
   HAL_Delay(500);
+  HD44780_Clear();
+  HD44780_PrintStr("now loading");
   uint32_t index = 0;
   //RPM軸
   for(int i=0;i<RPM_SIZE;i++){
@@ -363,6 +365,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, target1);
 	  HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_1);
   }else if(GPIO_Pin == EXTI1_cam_Pin){
+	  //カム信号割り込み
 	  HAL_GPIO_WritePin(fuel_output_GPIO_Port,fuel_output_Pin,GPIO_PIN_SET);
 	  uint32_t now1 = __HAL_TIM_GET_COUNTER(&htim5);
 	  uint32_t target2 = now1 + (uint32_t)T_inj_us;
@@ -401,7 +404,7 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
     {
       HAL_GPIO_WritePin(IG_output_GPIO_Port, IG_output_Pin, GPIO_PIN_RESET);
       HAL_TIM_OC_Stop_IT(&htim4, TIM_CHANNEL_1);
-    }
+    }//燃料噴射終わり
   else if (htim->Instance == TIM5){
 	  HAL_GPIO_WritePin(fuel_output_GPIO_Port, fuel_output_Pin, GPIO_PIN_RESET);
 	  HAL_TIM_OC_Stop_IT(&htim5, TIM_CHANNEL_1);
