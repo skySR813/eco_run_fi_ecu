@@ -26,7 +26,10 @@
 #include "cmsis_os.h"
 #include "adc.h"
 #include "crc.h"
+#include "dma.h"
+#include "fatfs.h"
 #include "i2c.h"
+#include "sdio.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -129,8 +132,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
-  MX_UART5_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_ADC1_Init();
@@ -140,6 +143,8 @@ int main(void)
   MX_TIM5_Init();
   MX_I2C3_Init();
   MX_CRC_Init();
+  MX_SDIO_SD_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start(&htim2);   // 周期計測用
   HAL_TIM_Base_Start(&htim3);   // 点火遅延用
@@ -275,7 +280,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLM = 8;
   RCC_OscInitStruct.PLL.PLLN = 180;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLQ = 8;
   RCC_OscInitStruct.PLL.PLLR = 2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {

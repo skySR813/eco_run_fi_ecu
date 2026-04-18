@@ -235,12 +235,14 @@ void fuel_task(void const * argument)
 	  // --- クランキング ---
 	  if(rpm_A < 500)
 	  {
+		  started = 0;
 	      if(tmp < 10)      T_inj_us = 9000;
 	      else if(tmp <30)  T_inj_us = 7000;
 	      else              T_inj_us = 5000;
 	  }
 	  else
 	  {
+		  started = 1;
 	      // --- 通常燃料 ---
 	      AFR_target = getValue_f(rpm_A,THper,current_map.map_fuel);
 
