@@ -65,10 +65,6 @@ void Error_Handler(void);
 #define EXTI1_cam_EXTI_IRQn EXTI1_IRQn
 #define TH_per_adcinput_Pin GPIO_PIN_1
 #define TH_per_adcinput_GPIO_Port GPIOA
-#define USART_TX_Pin GPIO_PIN_2
-#define USART_TX_GPIO_Port GPIOA
-#define USART_RX_Pin GPIO_PIN_3
-#define USART_RX_GPIO_Port GPIOA
 #define tmp_adcinput_Pin GPIO_PIN_4
 #define tmp_adcinput_GPIO_Port GPIOA
 #define LD2_Pin GPIO_PIN_5

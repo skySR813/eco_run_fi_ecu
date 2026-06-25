@@ -232,6 +232,8 @@ void fuel_task(void const * argument)
   {
 
 
+
+
 	  // --- クランキング ---
 	  if(rpm_A < 500)
 	  {
@@ -286,6 +288,11 @@ void fuel_task(void const * argument)
 	  static float inj_filtered = 0;
 	  inj_filtered = inj_filtered * 0.7f + T_inj_us * 0.3f;
 	  T_inj_us = inj_filtered;
+
+	  //レブリミッター
+	  if(rpm_A > 6000){
+		  T_inj_us = 0;
+	  }
 
 	  osDelay(1);
   }

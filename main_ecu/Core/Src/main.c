@@ -133,7 +133,6 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
-  MX_USART2_UART_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_ADC1_Init();
@@ -145,6 +144,7 @@ int main(void)
   MX_CRC_Init();
   MX_SDIO_SD_Init();
   MX_FATFS_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start(&htim2);   // 周期計測用
   HAL_TIM_Base_Start(&htim3);   // 点火遅延用
