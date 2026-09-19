@@ -40,6 +40,8 @@ volatile float AFR_targett = 0;
 volatile float T_inj_ms = 0;
 volatile float T_inj_us = 0;
 
+volatile uint8_t injector_test_mode = 0;
+
 float inj_inv_ms = 1.0f;
 float AFR_base = 14.7f;
 float T_base = 6.5f;
@@ -49,6 +51,8 @@ float timesecmin = 0.0f;
 
 volatile uint32_t crank_last_us = 0;
 volatile uint32_t crank_period_us = 15000;
+volatile uint32_t crank_last_edge_ms = 0;
+volatile uint8_t crank_is_synchronised = 0;
 volatile int32_t delay_us = 0;
 int dwell_us = 0;
 volatile int crank_flag = 0;

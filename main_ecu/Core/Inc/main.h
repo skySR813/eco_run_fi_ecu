@@ -46,7 +46,19 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
+int XBee_GetEngineRPM(void);
 
+
+HAL_StatusTypeDef XBee_WriteBin(
+    const uint8_t *data,
+    uint16_t length
+);
+
+
+HAL_StatusTypeDef XBee_VerifyBin(
+    const uint8_t *data,
+    uint16_t length
+);
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/

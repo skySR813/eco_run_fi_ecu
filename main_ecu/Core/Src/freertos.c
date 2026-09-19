@@ -30,6 +30,9 @@
 #include "ecu_config.h"
 #include "adc.h"
 #include "ecu_UI.h"
+#include "xbee_ecu.h"
+#include "usart.h"
+#include "crc.h"
 
 /* USER CODE END Includes */
 
@@ -50,6 +53,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+XBee_ECU_Handle_t xbee_ecu;
 
 /* USER CODE END Variables */
 osThreadId IG_TaskHandle;
@@ -57,6 +61,7 @@ osThreadId fuel_TaskHandle;
 osThreadId Throttle_TaskHandle;
 osThreadId TMP_TaskHandle;
 osThreadId UI_TaskHandle;
+osThreadId XbeetaskHandle;
 osMessageQId sensor_QueueHandle;
 osMessageQId command_QueueHandle;
 osMessageQId configQueueHandle;
@@ -74,6 +79,7 @@ void fuel_task(void const * argument);
 void Throttle_task(void const * argument);
 void TMP_task(void const * argument);
 void UI_task(void const * argument);
+void xbeetask(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -166,6 +172,10 @@ void MX_FREERTOS_Init(void) {
   osThreadDef(UI_Task, UI_task, osPriorityLow, 0, 256);
   UI_TaskHandle = osThreadCreate(osThread(UI_Task), NULL);
 
+  /* definition and creation of Xbeetask */
+  osThreadDef(Xbeetask, xbeetask, osPriorityAboveNormal, 0, 128);
+  XbeetaskHandle = osThreadCreate(osThread(Xbeetask), NULL);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -189,8 +199,6 @@ void ig_Task(void const * argument)
 
 
 	  	        fdeg = getValue_i(rpm_A, THper, current_map.map_ign);
-	  	        fdeg_ui = fdeg;
-
 	  	        if (fdeg < 0)  fdeg = 0;
 	  	        if (fdeg > 35) fdeg = 35;
 	  	        //アイドリング点火時期ずらし
@@ -198,6 +206,9 @@ void ig_Task(void const * argument)
 	  	          if(rpm_A < 1400) fdeg += 3;
 	  	          if(rpm_A > 1600) fdeg -= 3;
 	  	         }
+	  	        if (fdeg < 0)  fdeg = 0;
+	  	        if (fdeg > 35) fdeg = 35;
+	  	        fdeg_ui = fdeg;
 
 	  	        int32_t sdeg = BASE_ANGLE - fdeg;
 	  	        delay_us = (sdeg * crank_period_us) / 360;
@@ -227,10 +238,32 @@ void fuel_task(void const * argument)
   /* USER CODE BEGIN fuel_task */
 	static TickType_t start_time = 0;
 	static uint8_t started = 0;
+	static uint8_t was_running = 0;
   /* Infinite loop */
   for(;;)
   {
 
+	  //インジェクター流量測定モード
+	  if(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET)
+	  {
+	      injector_test_mode = 1;
+	  }
+	  else
+	  {
+	      injector_test_mode = 0;
+	  }
+
+	  if(injector_test_mode)
+	      {
+		      HAL_GPIO_WritePin(fuel_output_GPIO_Port,fuel_output_Pin,GPIO_PIN_SET);
+
+	          osDelay(5);
+
+	          HAL_GPIO_WritePin(fuel_output_GPIO_Port,fuel_output_Pin,GPIO_PIN_RESET);
+
+	          osDelay(5);
+	          continue;
+	      }
 
 
 
@@ -238,6 +271,7 @@ void fuel_task(void const * argument)
 	  if(rpm_A < 500)
 	  {
 		  started = 0;
+		  was_running = 0;
 	      if(tmp < 10)      T_inj_us = 9000;
 	      else if(tmp <30)  T_inj_us = 7000;
 	      else              T_inj_us = 5000;
@@ -245,12 +279,18 @@ void fuel_task(void const * argument)
 	  else
 	  {
 		  started = 1;
+		  if (!was_running)
+		  {
+		      start_time = xTaskGetTickCount();
+		      was_running = 1;
+		  }
 	      // --- 通常燃料 ---
 	      AFR_target = getValue_f(rpm_A,THper,current_map.map_fuel);
 
 	      if(AFR_target < 10.0f) AFR_target = 10.0f;
 	      if(AFR_target > 18.0f) AFR_target = 18.0f;
 
+	      //簡易的に噴射時間を設定
 	      T_inj_ms = T_base * (AFR_base / AFR_target);
 
 	      //温度補正（簡易）
@@ -295,7 +335,8 @@ void fuel_task(void const * argument)
 	  }
 
 	  osDelay(1);
-  }
+	}
+
   /* USER CODE END fuel_task */
 }
 
@@ -385,8 +426,8 @@ void UI_task(void const * argument)
 		static int last_tps = -1;
 		char tpss[16];
 
-		static float last_tmp = -1;
-		char tmmp[16];
+		static float last_T_inj_ms = -1;
+		char T_inj_mss[16];
 
 		static float last_fuel = -1;
 		char fuell[16];
@@ -401,11 +442,30 @@ void UI_task(void const * argument)
 	  //UIprint_int(fdeg_ui,&last_deg,degg,1,1);
 
 	  UIprint_int(THper,&last_tps,tpss,4,1);
-	  UIprint_float(tmp,&last_tmp,tmmp,9,1);
+	  UIprint_float(T_inj_ms,&last_T_inj_ms,T_inj_mss,9,1);
 	  AFR_targett = AFR_target;
 	  osDelay(200);
   }
   /* USER CODE END UI_task */
+}
+
+/* USER CODE BEGIN Header_xbeetask */
+/**
+* @brief Function implementing the Xbeetask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_xbeetask */
+void xbeetask(void const * argument)
+{
+  /* USER CODE BEGIN xbeetask */
+  /* Infinite loop */
+  for(;;)
+  {
+	  XBee_ECU_Process(&xbee_ecu);
+	  osDelay(1);
+  }
+  /* USER CODE END xbeetask */
 }
 
 /* Private application code --------------------------------------------------*/

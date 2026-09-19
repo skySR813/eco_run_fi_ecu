@@ -7,9 +7,9 @@
 typedef struct{
     uint16_t rpm_axis_ee[RPM_SIZE];
     uint16_t tps_axis_ee[TPS_SIZE];
-    float map_fuel_raw_ee[RPM_SIZE][TPS_SIZE];
+    uint16_t map_fuel_raw_ee[RPM_SIZE][TPS_SIZE];
     float fuel_map_ee[RPM_SIZE][TPS_SIZE];
-    uint16_t map_ign_ee[RPM_SIZE][TPS_SIZE];
+    int16_t map_ign_ee[RPM_SIZE][TPS_SIZE];
 
     int rpm_axis[RPM_SIZE];
     int tps_axis[TPS_SIZE];
@@ -32,6 +32,8 @@ extern volatile float AFR_targett; //表示用
 extern volatile float T_inj_ms;
 extern volatile float T_inj_us;
 
+extern volatile uint8_t injector_test_mode;
+
 extern float inj_inv_ms;
 extern float AFR_base;
 extern float T_base;
@@ -41,6 +43,8 @@ extern float timesecmin;
 
 extern volatile uint32_t crank_last_us;
 extern volatile uint32_t crank_period_us;
+extern volatile uint32_t crank_last_edge_ms;
+extern volatile uint8_t crank_is_synchronised;
 extern volatile int32_t delay_us;
 extern int dwell_us;
 extern volatile int crank_flag;

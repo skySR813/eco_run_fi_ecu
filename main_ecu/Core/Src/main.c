@@ -46,11 +46,13 @@
 #include "ecu_config.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "xbee_ecu.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+EE24_HandleTypeDef hee24;
+extern XBee_ECU_Handle_t xbee_ecu;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -63,13 +65,70 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+static uint16_t map_crc16(const uint8_t *data, uint32_t length);
+static uint8_t load_map_from_payload(const uint8_t *data, uint32_t length);
+extern osMutexId I2C_mutexHandle;
 
+int XBee_GetEngineRPM(void)
+{
+    /* A previous RPM value is not evidence that the engine is still rotating. */
+    if (!crank_is_synchronised ||
+        (HAL_GetTick() - crank_last_edge_ms) > CRANK_TIMEOUT_MS ||
+        rpm_A <= 0)
+        return 0;
+
+    if (rpm_A > 65535)
+        return 65535;
+
+    return (uint16_t)rpm_A;
+}
+
+
+HAL_StatusTypeDef XBee_WriteBin(
+    const uint8_t *data,
+    uint16_t length
+)
+{
+    if (data == NULL || length != MAP_SIZE)
+        return HAL_ERROR;
+
+    if (osMutexWait(I2C_mutexHandle, osWaitForever) != osOK)
+        return HAL_ERROR;
+    uint8_t write_ok = EE24_Write(&hee24, 0x0000U, (uint8_t *)data, length, 1000U);
+    (void)osMutexRelease(I2C_mutexHandle);
+    return write_ok ? HAL_OK : HAL_ERROR;
+}
+
+
+HAL_StatusTypeDef XBee_VerifyBin(
+    const uint8_t *data,
+    uint16_t length
+)
+{
+    uint8_t verify[MAP_SIZE];
+
+    if (data == NULL || length != MAP_SIZE ||
+        osMutexWait(I2C_mutexHandle, osWaitForever) != osOK)
+    {
+        return HAL_ERROR;
+    }
+    uint8_t read_ok = EE24_Read(&hee24, 0x0000U, verify, MAP_SIZE, 1000U);
+    (void)osMutexRelease(I2C_mutexHandle);
+    if (!read_ok ||
+        memcmp(data, verify, MAP_SIZE) != 0 ||
+        !load_map_from_payload(verify, MAP_SIZE))
+    {
+        return HAL_ERROR;
+    }
+
+    return HAL_OK;
+}
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-EE24_HandleTypeDef hee24;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -87,19 +146,89 @@ void MX_FREERTOS_Init(void);
 
 
 
-uint16_t calc_crc16(uint8_t *data, uint32_t length)
+static uint16_t map_crc16(const uint8_t *data, uint32_t length)
 {
-	if(length > MAP_SIZE){
-		length = MAP_SIZE;
-	}
-    static uint32_t buffer[(MAP_SIZE + 3) / 4];
-    memset(buffer, 0, sizeof(buffer));
-    memcpy(buffer, data, length);
+    uint32_t crc = 0xFFFFFFFFU;
 
-    uint32_t crc32 = HAL_CRC_Calculate(&hcrc, buffer, (length + 3) / 4);
+    for (uint32_t i = 0; i < length; i++)
+    {
+        crc ^= data[i];
+        for (uint32_t bit = 0; bit < 8U; bit++)
+        {
+            crc = (crc & 1U) ? ((crc >> 1U) ^ 0xEDB88320U) : (crc >> 1U);
+        }
+    }
 
-    return (uint16_t)(crc32 & 0xFFFF); // 下位16bit使用
-    //return crc32;
+    return (uint16_t)((crc ^ 0xFFFFFFFFU) & 0xFFFFU);
+}
+
+static uint8_t load_map_from_payload(const uint8_t *data, uint32_t length)
+{
+    mapdata candidate = default_map;
+    uint32_t index = 0U;
+    uint16_t stored_crc;
+
+    if (data == NULL || length != MAP_SIZE)
+        return 0U;
+
+    stored_crc = (uint16_t)data[MAP_DATA_SIZE] |
+                 ((uint16_t)data[MAP_DATA_SIZE + 1U] << 8U);
+    if (map_crc16(data, MAP_DATA_SIZE) != stored_crc)
+        return 0U;
+
+    for (int i = 0; i < RPM_SIZE; i++)
+    {
+        candidate.rpm_axis[i] = (int)((uint16_t)data[index] |
+                                      ((uint16_t)data[index + 1U] << 8U));
+        index += 2U;
+        if (candidate.rpm_axis[i] > 12000 ||
+            (i > 0 && candidate.rpm_axis[i] <= candidate.rpm_axis[i - 1]))
+            return 0U;
+    }
+
+    for (int i = 0; i < TPS_SIZE; i++)
+    {
+        candidate.tps_axis[i] = (int)((uint16_t)data[index] |
+                                      ((uint16_t)data[index + 1U] << 8U));
+        index += 2U;
+        if (candidate.tps_axis[i] > 100 ||
+            (i > 0 && candidate.tps_axis[i] <= candidate.tps_axis[i - 1]))
+            return 0U;
+    }
+
+    for (int r = 0; r < RPM_SIZE; r++)
+    {
+        for (int t = 0; t < TPS_SIZE; t++)
+        {
+            uint16_t value = (uint16_t)data[index] |
+                             ((uint16_t)data[index + 1U] << 8U);
+            index += 2U;
+            candidate.map_fuel_raw_ee[r][t] = value;
+            candidate.map_fuel[r][t] = (float)value / 1000.0f;
+            if (candidate.map_fuel[r][t] < 10.0f || candidate.map_fuel[r][t] > 18.0f)
+                return 0U;
+        }
+    }
+
+    for (int r = 0; r < RPM_SIZE; r++)
+    {
+        for (int t = 0; t < TPS_SIZE; t++)
+        {
+            int16_t value = (int16_t)((uint16_t)data[index] |
+                                      ((uint16_t)data[index + 1U] << 8U));
+            index += 2U;
+            candidate.map_ign_ee[r][t] = value;
+            candidate.map_ign[r][t] = (int)value;
+            if (value < -20 || value > 40)
+                return 0U;
+        }
+    }
+
+    if (index != MAP_DATA_SIZE)
+        return 0U;
+
+    current_map = candidate;
+    return 1U;
 }
 /* USER CODE END 0 */
 
@@ -146,6 +275,13 @@ int main(void)
   MX_FATFS_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
+  XBee_ECU_Init(
+  	        &xbee_ecu,
+  	        &huart3,
+  			XBee_GetEngineRPM,
+  	        XBee_WriteBin,
+  	        XBee_VerifyBin
+  	    );
   HAL_TIM_Base_Start(&htim2);   // 周期計測用
   HAL_TIM_Base_Start(&htim3);   // 点火遅延用
   HAL_TIM_Base_Start(&htim5);   //燃料噴射時間用
@@ -161,75 +297,19 @@ int main(void)
       }
   }
   //HAL_Delay(10000);
-  // EEPROM を初期化
-  if( EE24_Init(&hee24, &hi2c3, EE24_ADDRESS_DEFAULT) ){
-	  HD44780_PrintStr("2");
-	  HAL_Delay(500);
-      EE24_Read(&hee24, 0x0000, raw_map, MAP_SIZE, 1000);
-      HD44780_PrintStr("3");
-      HAL_Delay(500);
-  }
-  HD44780_PrintStr("4");
-  HAL_Delay(500);
-  HD44780_Clear();
-  HD44780_PrintStr("now loading");
-  uint32_t index = 0;
-  //RPM軸
-  for(int i=0;i<RPM_SIZE;i++){
-	  current_map.rpm_axis_ee[i] = raw_map[index] | (raw_map[index+1] << 8);
-	  index += 2;
-  }
-  // TPS軸
-  for(int i=0;i<TPS_SIZE;i++){
-      current_map.tps_axis_ee[i] = raw_map[index] | (raw_map[index+1] << 8);
-      index += 2;
-  }
-
-  // AFRマップ
-  for(int r=0;r<RPM_SIZE;r++){
-      for(int t=0;t<TPS_SIZE;t++){
-          current_map.map_fuel_raw_ee[r][t] =
-              raw_map[index] | (raw_map[index+1] << 8);
-
-          current_map.fuel_map_ee[r][t] =
-              current_map.map_fuel_raw_ee[r][t] / 1000.0f;//小数点マップに戻す
-
-          index += 2;
-      }
-  }
-
-  // 点火マップ
-  for(int r=0;r<RPM_SIZE;r++){
-      for(int t=0;t<TPS_SIZE;t++){
-          current_map.map_ign_ee[r][t] =
-              raw_map[index] | (raw_map[index+1] << 8);
-          index += 2;
-      }
-  }
-
-
-
-  //デフォルトを使うかEEPROM版を使うか判断
-  if(index != MAP_SIZE /* || crc_calc != crc_read */ )
+  /* Invalid, erased, or partially written EEPROM must never become a map. */
+  if (!EE24_Init(&hee24, &hi2c3, EE24_ADDRESS_DEFAULT) ||
+      !EE24_Read(&hee24, 0x0000U, raw_map, MAP_SIZE, 1000U) ||
+      !load_map_from_payload(raw_map, MAP_SIZE))
   {
-	  HD44780_SetCursor(0,0);
-	  HD44780_PrintStr("error! use dmap");
-	  HAL_Delay(100);
-	  //for(volatile int i=0;i<2000000;i++);
-	  current_map = default_map;
-  }else{
-	  for(int i=0;i<RPM_SIZE;i++)
-	          current_map.rpm_axis[i] = current_map.rpm_axis_ee[i];
-
-	      for(int i=0;i<TPS_SIZE;i++)
-	          current_map.tps_axis[i] = current_map.tps_axis_ee[i];
-
-	      for(int r=0;r<RPM_SIZE;r++){
-	          for(int t=0;t<TPS_SIZE;t++){
-	              current_map.map_fuel[r][t] = current_map.fuel_map_ee[r][t];
-	              current_map.map_ign[r][t]  = current_map.map_ign_ee[r][t];
-	          }
-	      }
+      current_map = default_map;
+      HD44780_Clear();
+      HD44780_PrintStr("default map");
+  }
+  else
+  {
+      HD44780_Clear();
+      HD44780_PrintStr("map loaded");
   }
 
 
@@ -341,21 +421,28 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == EXTI0_crank_Pin)   // ← クランク入力ピンに合わせる
   {
-	  uint32_t now = __HAL_TIM_GET_COUNTER(&htim2);
+  	  uint32_t now = __HAL_TIM_GET_COUNTER(&htim2);
+      uint32_t period;
 
-	  // オーバーフロー対策
-	        if(now >= crank_last_us) {
-	            crank_period_us = now - crank_last_us;
-	        } else {
-	            crank_period_us = (0xFFFFFFFF - crank_last_us) + now + 1;
-	        }
-	        crank_last_us = now;
+      if (!crank_is_synchronised)
+      {
+          crank_last_us = now;
+          crank_last_edge_ms = HAL_GetTick();
+          crank_is_synchronised = 1U;
+          return;
+      }
 
-	        if(crank_period_us > 0) {
-	          rpm_A = 60000000UL / crank_period_us;
-	        }else{
-	          rpm_A = 0;
-	        }
+      /* Unsigned subtraction is correct across a 32-bit timer wrap. */
+      period = now - crank_last_us;
+      if (period < CRANK_PERIOD_MIN_US || period > CRANK_PERIOD_MAX_US)
+      {
+          return;
+      }
+
+      crank_period_us = period;
+      crank_last_us = now;
+      crank_last_edge_ms = HAL_GetTick();
+      rpm_A = (int)(60000000UL / crank_period_us);
 
 	  	    if (rpm_A < 3000)      dwell_us = 3000;
 	  	    else if (rpm_A < 6000) dwell_us = 2000;
@@ -371,6 +458,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	  HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_1);
   }else if(GPIO_Pin == EXTI1_cam_Pin){
 	  //カム信号割り込み
+	  //インジェクターテストモードでは割り込み無効化
+	  if(injector_test_mode)
+	      {
+	          return;
+	      }
+
 	  HAL_GPIO_WritePin(fuel_output_GPIO_Port,fuel_output_Pin,GPIO_PIN_SET);
 	  uint32_t now1 = __HAL_TIM_GET_COUNTER(&htim5);
 	  uint32_t target2 = now1 + (uint32_t)T_inj_us;
@@ -415,6 +508,31 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 	  HAL_TIM_OC_Stop_IT(&htim5, TIM_CHANNEL_1);
   }
 }
+
+
+
+
+
+
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART3)
+    {
+        XBee_ECU_RxCpltCallback(&xbee_ecu, huart);
+    }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART3)
+    {
+        XBee_ECU_ErrorCallback(&xbee_ecu, huart);
+    }
+}
+
+
+
 
 
 
