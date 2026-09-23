@@ -33,6 +33,7 @@
 #include "xbee_ecu.h"
 #include "usart.h"
 #include "crc.h"
+#include "tim.h"
 
 /* USER CODE END Includes */
 
@@ -255,13 +256,7 @@ void fuel_task(void const * argument)
 
 	  if(injector_test_mode)
 	      {
-		      HAL_GPIO_WritePin(fuel_output_GPIO_Port,fuel_output_Pin,GPIO_PIN_SET);
-
-	          osDelay(5);
-
-	          HAL_GPIO_WritePin(fuel_output_GPIO_Port,fuel_output_Pin,GPIO_PIN_RESET);
-
-	          osDelay(5);
+		      __HAL_TIM_SET_COUNTER(&htim1,5000);
 	          continue;
 	      }
 
@@ -302,7 +297,7 @@ void fuel_task(void const * argument)
 	      //インジェクター無効噴射時間加算
 	      T_inj_ms += inj_inv_ms;
 	      //msからμsに変換
-	      T_inj_us = T_inj_ms * 1000.0f;
+	      T_inj_us = T_inj_ms * 1000.0f + 0.5f;
 	  }
 
 	  // --- After Start ---

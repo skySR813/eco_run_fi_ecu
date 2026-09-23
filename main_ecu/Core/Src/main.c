@@ -274,6 +274,7 @@ int main(void)
   MX_SDIO_SD_Init();
   MX_FATFS_Init();
   MX_USART3_UART_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   XBee_ECU_Init(
   	        &xbee_ecu,
@@ -282,9 +283,10 @@ int main(void)
   	        XBee_WriteBin,
   	        XBee_VerifyBin
   	    );
+  HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_2); //NEW燃料時間制御
   HAL_TIM_Base_Start(&htim2);   // 周期計測用
   HAL_TIM_Base_Start(&htim3);   // 点火遅延用
-  HAL_TIM_Base_Start(&htim5);   //燃料噴射時間用
+  HAL_TIM_Base_Start(&htim4);
   HD44780_Init(2);
   HD44780_Clear();
   HD44780_PrintStr("1");
@@ -464,15 +466,22 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	          return;
 	      }
 
-	  HAL_GPIO_WritePin(fuel_output_GPIO_Port,fuel_output_Pin,GPIO_PIN_SET);
-	  uint32_t now1 = __HAL_TIM_GET_COUNTER(&htim5);
-	  uint32_t target2 = now1 + (uint32_t)T_inj_us;
+	  //HAL_GPIO_WritePin(fuel_output_GPIO_Port,fuel_output_Pin,GPIO_PIN_SET);
+	  //uint32_t now1 = __HAL_TIM_GET_COUNTER(&htim5);
+	  //uint32_t target2 = now1 + (uint32_t)T_inj_us;
 
 	  //噴射時間セット
+	 //噴射から噴射終了までやる
+	  uint32_t pulse = (uint32_t)T_inj_us;
+	  if (pulse > 65000U) pulse = 65000U;  //16ビットカウンタ安全マージン
+	  __HAL_TIM_DISABLE(&htim1);
+	  __HAL_TIM_SET_COUNTER(&htim1, 0);
+	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pulse);
+	  __HAL_TIM_ENABLE(&htim1);
 
-		  __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_1, target2);
+		  //__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_1, target2);
 
-		 HAL_TIM_OC_Start_IT(&htim5, TIM_CHANNEL_1);
+		 //HAL_TIM_OC_Start_IT(&htim5, TIM_CHANNEL_1);
 
 
 
@@ -502,11 +511,7 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
     {
       HAL_GPIO_WritePin(IG_output_GPIO_Port, IG_output_Pin, GPIO_PIN_RESET);
       HAL_TIM_OC_Stop_IT(&htim4, TIM_CHANNEL_1);
-    }//燃料噴射終わり
-  else if (htim->Instance == TIM5){
-	  HAL_GPIO_WritePin(fuel_output_GPIO_Port, fuel_output_Pin, GPIO_PIN_RESET);
-	  HAL_TIM_OC_Stop_IT(&htim5, TIM_CHANNEL_1);
-  }
+    }
 }
 
 
